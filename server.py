@@ -1,0 +1,300 @@
+"""CLI History Visualizer — 本機 server。
+
+    python server.py      ->  http://127.0.0.1:8787
+
+每次要專案清單時會順手 stat 一次資料夾（sync_only），所以資料夾刪掉、
+放回來都會即時反映在網頁上。完整重新索引走 POST /api/reindex。
+"""
+
+from __future__ import annotations
+
+import sqlite3
+import webbrowser
+from pathlib import Path
+
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import FileResponse
+
+import indexer
+
+ROOT = Path(__file__).resolve().parent
+WEB = ROOT / "web" / "index.html"
+PORT = 8787
+
+# 進度來源優先序：CLI 自己寫的摘要 > 壓縮摘要 > 使用者手寫的 memory 檔
+KIND_RANK = {"away_summary": 3, "compact_summary": 2, "memory_file": 1}
+
+app = FastAPI(title="CLI History Visualizer")
+
+
+def db():
+    con = sqlite3.connect(indexer.DB_PATH)
+    con.row_factory = sqlite3.Row
+    return con
+
+
+def rows(cur):
+    return [dict(r) for r in cur.fetchall()]
+
+
+def like_pattern(term):
+    """給 LIKE ... ESCAPE '\\' 用的樣式，跳脫 % _ 與反斜線本身。"""
+    escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
+def traffic_light(proj):
+    """prompt 講的事情到底有沒有落地 —— 問 repo，不問對話紀錄。
+
+    green  最後一次 commit 在最後一則 prompt 之後 -> 已落實
+    yellow 工作區有未提交的變更 -> 正在產出中
+    grey   談過但 commit 沒跟上
+    None   不是 git repo，無從判斷
+    """
+    if not proj.get("is_git"):
+        return None
+    if proj.get("git_dirty"):
+        return "yellow"
+    last_commit, last_prompt = proj.get("git_last_ts"), proj.get("last_seen")
+    if last_commit and last_prompt and last_commit >= last_prompt:
+        return "green"
+    return "grey"
+
+
+def first_para(text, limit=220):
+    if not text:
+        return None
+    head = next((p.strip() for p in text.split("\n\n") if p.strip()), text.strip())
+    return head[:limit] + ("…" if len(head) > limit else "")
+
+
+# ── API ───────────────────────────────────────────────────────────────────
+
+@app.get("/")
+def index():
+    return FileResponse(WEB)
+
+
+@app.get("/api/overview")
+def overview(include_gone: bool = False, include_containers: bool = False):
+    con = db()
+    appeared, vanished = indexer.sync_only(con)
+
+    clauses = []
+    if not include_gone:
+        clauses.append("p.exists_on_disk = 1")
+    if not include_containers:
+        clauses.append("p.is_container = 0")
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    projects = rows(con.execute(f"""
+        SELECT p.id, p.real_path, p.display_name, p.last_seen, p.first_seen,
+               p.session_count, p.prompt_count, p.exists_on_disk, p.is_git,
+               p.vanished_at, p.git_branch, p.git_last_ts, p.git_last_msg,
+               p.git_dirty, p.git_commits, p.is_container,
+               (SELECT COUNT(*) FROM commit_ref c WHERE c.project_id = p.id) AS commits,
+               (SELECT COUNT(DISTINCT path) FROM file_touch f WHERE f.project_id = p.id) AS files,
+               (SELECT COUNT(*) FROM session s
+                 WHERE s.project_id = p.id AND s.transcript_state = 'live') AS live_sessions
+        FROM project p {where}
+        ORDER BY p.last_seen DESC
+    """))
+
+    for proj in projects:
+        pid = proj["id"]
+
+        signal = con.execute("""
+            SELECT kind, goal, state, next_step, origin, ts FROM progress_signal
+            WHERE project_id = ?
+              AND (goal IS NOT NULL OR next_step IS NOT NULL OR state IS NOT NULL)
+            ORDER BY CASE kind WHEN 'away_summary' THEN 3
+                               WHEN 'compact_summary' THEN 2
+                               WHEN 'memory_file' THEN 1 ELSE 0 END DESC,
+                     ts DESC LIMIT 1
+        """, (pid,)).fetchone()
+        proj["goal"] = signal["goal"] if signal else None
+        proj["next_step"] = signal["next_step"] if signal else None
+        proj["state"] = signal["state"] if signal else None
+
+        if not proj["state"]:      # 沒有現成摘要就退回最後一則 assistant 發言
+            fallback = con.execute("""
+                SELECT assistant_summary FROM turn
+                WHERE project_id = ? AND assistant_summary IS NOT NULL
+                ORDER BY ts DESC LIMIT 1
+            """, (pid,)).fetchone()
+            proj["state"] = first_para(fallback["assistant_summary"]) if fallback else None
+
+        proj["light"] = traffic_light(proj)
+
+        last = con.execute("""
+            SELECT text, ts FROM prompt WHERE project_id = ? AND is_slash = 0
+            ORDER BY ts DESC LIMIT 1
+        """, (pid,)).fetchone()
+        proj["last_prompt"] = dict(last) if last else None
+
+        proj["sources"] = [r["origin"] for r in con.execute("""
+            SELECT origin, COUNT(*) n FROM progress_signal
+            WHERE project_id = ? AND origin IS NOT NULL
+            GROUP BY origin ORDER BY n DESC LIMIT 4
+        """, (pid,))]
+
+        proj["hotspots"] = rows(con.execute("""
+            SELECT path, COUNT(*) n FROM file_touch WHERE project_id = ?
+            GROUP BY path HAVING n >= 3 ORDER BY n DESC LIMIT 3
+        """, (pid,)))
+
+    con.close()
+    return {"projects": projects, "appeared": appeared, "vanished": vanished}
+
+
+@app.get("/api/project/{project_id}")
+def project_detail(project_id: int):
+    con = db()
+    proj = con.execute("SELECT * FROM project WHERE id = ?", (project_id,)).fetchone()
+    if proj is None:
+        raise HTTPException(404, "no such project")
+    sessions = rows(con.execute("""
+        SELECT s.id, s.title, s.started_at, s.ended_at, s.prompt_count,
+               s.transcript_state,
+               (SELECT COUNT(DISTINCT path) FROM file_touch f WHERE f.session_id = s.id) AS files,
+               (SELECT COUNT(*) FROM commit_ref c WHERE c.session_id = s.id) AS commits,
+               (SELECT COUNT(*) FROM turn t WHERE t.session_id = s.id AND t.has_error = 1) AS errors
+        FROM session s WHERE s.project_id = ?
+        ORDER BY COALESCE(s.started_at, '') DESC
+    """, (project_id,)))
+    con.close()
+    detail = dict(proj)
+    detail["light"] = traffic_light(detail)
+    return {"project": detail, "sessions": sessions}
+
+
+@app.get("/api/session/{session_id}")
+def session_detail(session_id: str):
+    con = db()
+    sess = con.execute("SELECT * FROM session WHERE id = ?", (session_id,)).fetchone()
+    if sess is None:
+        raise HTTPException(404, "no such session")
+    payload = {
+        "session": dict(sess),
+        "prompts": rows(con.execute(
+            "SELECT id, ts, seq, text, is_slash, pasted FROM prompt "
+            "WHERE session_id = ? ORDER BY ts, seq", (session_id,))),
+        "turns": rows(con.execute(
+            "SELECT id, ts, assistant_summary, tools_json, has_error FROM turn "
+            "WHERE session_id = ? ORDER BY ts", (session_id,))),
+        "files": rows(con.execute(
+            "SELECT path, verb, COUNT(*) n FROM file_touch WHERE session_id = ? "
+            "GROUP BY path, verb ORDER BY n DESC", (session_id,))),
+        "commands": rows(con.execute(
+            "SELECT ts, command, kind FROM command_run WHERE session_id = ? "
+            "ORDER BY ts LIMIT 200", (session_id,))),
+        "commits": rows(con.execute(
+            "SELECT ts, message FROM commit_ref WHERE session_id = ? ORDER BY ts",
+            (session_id,))),
+        "signals": rows(con.execute(
+            "SELECT kind, goal, state, next_step, origin, ts, "
+            "substr(body,1,1200) AS body "
+            "FROM progress_signal WHERE session_id = ? ORDER BY ts", (session_id,))),
+    }
+    con.close()
+    return payload
+
+
+@app.get("/api/search")
+def search(q: str = Query(..., min_length=1), limit: int = 80):
+    """FTS5 trigram；2 字以下（或 FTS 撲空）自動退回 LIKE。
+
+    trigram 對 <3 字元的查詢是「靜默回 0 筆」而不是報錯，所以這個 fallback
+    不是最佳化，是正確性要求。
+    """
+    term = q.strip()
+    con = db()
+    mode = "fts"
+    hits = []
+
+    if len(term) >= 3:
+        phrase = '"' + term.replace('"', '""') + '"'
+        try:
+            hits = rows(con.execute("""
+                SELECT p.id, p.session_id, p.project_id, p.ts, p.text, p.is_slash,
+                       pr.display_name, s.title
+                FROM prompt_fts f
+                JOIN prompt p  ON p.id = f.rowid
+                LEFT JOIN project pr ON pr.id = p.project_id
+                LEFT JOIN session s  ON s.id = p.session_id
+                WHERE prompt_fts MATCH ? ORDER BY rank LIMIT ?
+            """, (phrase, limit)))
+        except sqlite3.OperationalError:
+            hits = []
+
+    if not hits:
+        mode = "like"
+        hits = rows(con.execute("""
+            SELECT p.id, p.session_id, p.project_id, p.ts, p.text, p.is_slash,
+                   pr.display_name, s.title
+            FROM prompt p
+            LEFT JOIN project pr ON pr.id = p.project_id
+            LEFT JOIN session s  ON s.id = p.session_id
+            WHERE p.text LIKE ? ESCAPE '\\' ORDER BY p.ts DESC LIMIT ?
+        """, (like_pattern(term), limit)))
+
+    con.close()
+    return {"mode": mode, "query": term, "count": len(hits), "hits": hits}
+
+
+@app.get("/api/recent")
+def recent(limit: int = 60):
+    """跨專案的最近動態流。"""
+    con = db()
+    data = rows(con.execute("""
+        SELECT p.id, p.session_id, p.project_id, p.ts, p.text, p.is_slash,
+               pr.display_name, s.title
+        FROM prompt p
+        LEFT JOIN project pr ON pr.id = p.project_id
+        LEFT JOIN session s  ON s.id = p.session_id
+        WHERE p.is_slash = 0 AND pr.exists_on_disk = 1
+        ORDER BY p.ts DESC LIMIT ?
+    """, (limit,)))
+    con.close()
+    return {"hits": data}
+
+
+@app.get("/api/heatmap")
+def heatmap():
+    con = db()
+    data = rows(con.execute(
+        "SELECT substr(ts,1,10) AS day, COUNT(*) n FROM prompt GROUP BY day ORDER BY day"))
+    con.close()
+    return {"days": data}
+
+
+@app.get("/api/day/{day}")
+def day_detail(day: str):
+    con = db()
+    data = rows(con.execute("""
+        SELECT p.id, p.session_id, p.project_id, p.ts, p.text, p.is_slash,
+               pr.display_name, s.title
+        FROM prompt p
+        LEFT JOIN project pr ON pr.id = p.project_id
+        LEFT JOIN session s  ON s.id = p.session_id
+        WHERE substr(p.ts,1,10) = ? ORDER BY p.ts
+    """, (day,)))
+    con.close()
+    return {"day": day, "hits": data}
+
+
+@app.post("/api/reindex")
+def reindex():
+    return indexer.run(full=False)
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    if not indexer.DB_PATH.exists():
+        print("首次啟動，建立索引…")
+        indexer.run(full=True)
+
+    url = f"http://127.0.0.1:{PORT}"
+    print(f"CLI History Visualizer -> {url}")
+    webbrowser.open(url)
+    uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="warning")

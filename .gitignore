@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+
+# 索引產物，隨時可由 ~/.claude 重建
+index.db
+index.db-wal
+index.db-shm
+
+# history.jsonl 備份含真實 prompt 內容，不進版控
+backup/
+docs/plan.md

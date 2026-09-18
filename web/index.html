@@ -1,0 +1,775 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CLI History Visualizer</title>
+<style>
+:root{
+  --bg:#f6f7f9; --panel:#fff; --line:#e3e6ea; --ink:#1b1f24; --dim:#6b7480;
+  --accent:#3b6ef0; --flag:#d93636; --ok:#1f9d55; --gone:#9aa3ad;
+  --cell0:#e9ecef; --cell1:#c3d5f7; --cell2:#8fb2f0; --cell3:#5a8ae8; --cell4:#2f63d6;
+  --radius:10px;
+  --on-accent:#fff;
+  --font:"Segoe UI","Noto Sans TC",system-ui,sans-serif;
+
+  /* 元件層旋鈕 —— 主題可以改的不只顏色，還有形狀、邊框、陰影、質感、字距 */
+  --card-bg:var(--panel);      /* 可以是漸層 */
+  --border-w:1px;
+  --shadow:none;               /* 卡片/面板陰影 */
+  --card-inset:none;           /* 額外的內框（報紙雙線框、原子時代內描邊） */
+  --hover-shadow:none;
+  --chip-radius:999px;
+  --cell-radius:2px;
+  --head-shadow:none;
+  --head-border:1px solid var(--line);
+  --title-transform:none;
+  --title-spacing:.03em;
+  --label-transform:none;      /* .rows 的欄位標籤 */
+  --blur:none;                 /* 毛玻璃 */
+  --page-bg:var(--bg);         /* 整頁底，可放多層漸層 */
+  --texture:none;              /* 全頁質感疊層 */
+  --texture-op:1;
+  --texture-blend:normal;
+}
+:root:not([data-theme="light"]) { }
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#14171c; --panel:#1b1f26; --line:#2b313a; --ink:#e6e9ee; --dim:#8b95a3;
+    --accent:#6f9bff; --flag:#ff6b6b; --ok:#4ad295; --gone:#5b6470;
+    --cell0:#232830; --cell1:#26406e; --cell2:#31589c; --cell3:#4174cd; --cell4:#5e95f5;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#14171c; --panel:#1b1f26; --line:#2b313a; --ink:#e6e9ee; --dim:#8b95a3;
+  --accent:#6f9bff; --flag:#ff6b6b; --ok:#4ad295; --gone:#5b6470;
+  --cell0:#232830; --cell1:#26406e; --cell2:#31589c; --cell3:#4174cd; --cell4:#5e95f5;
+}
+/* 全站字級的唯一旋鈕。所有 font-size 都是 rem，改這一個值整站等比縮放。
+   標頭的 A- / A+ 會改它並存進 localStorage。 */
+:root{ --fs:24px; }
+html{font-size:var(--fs)}
+
+*{box-sizing:border-box}
+body{
+  margin:0; color:var(--ink); font:1rem/1.6 var(--font);
+  background:var(--page-bg); background-attachment:fixed;
+}
+/* 全頁質感疊層：掃描線 / 紙紋 / 網格。不吃滑鼠事件 */
+body::after{
+  content:""; position:fixed; inset:0; pointer-events:none; z-index:999;
+  background-image:var(--texture); opacity:var(--texture-op);
+  mix-blend-mode:var(--texture-blend);
+}
+header{
+  position:sticky; top:0; z-index:10; display:flex; gap:.4em; align-items:center;
+  flex-wrap:wrap; padding:.5em .8em; background:var(--panel);
+  border-bottom:var(--head-border); box-shadow:var(--head-shadow);
+}
+h1{font-size:1.1rem; margin:0; letter-spacing:var(--title-spacing); font-weight:700;
+   white-space:nowrap; text-transform:var(--title-transform)}
+h1 small{color:var(--dim); font-weight:400; letter-spacing:0; margin-left:.45em; font-size:.6rem}
+input,select,button{
+  font:inherit; color:inherit; background:var(--bg);
+  border:1px solid var(--line); border-radius:.34em; padding:.34em .5em;
+}
+input#q{flex:1; min-width:11em; font-size:.82rem}
+select{font-size:.8rem}
+button{cursor:pointer}
+button:hover{border-color:var(--accent)}
+#fsdec,#fsinc,#theme,#reindex{font-size:.78rem; padding:.3em .6em; line-height:1.2}
+main{padding:.7em .85em 1.2em}
+.chips{display:flex; gap:.35em; flex-wrap:wrap; margin-bottom:.6em}
+.chip{
+  padding:.3em .66em; border:var(--border-w) solid var(--line); border-radius:var(--chip-radius);
+  background:var(--card-bg); cursor:pointer; font-size:.8rem; color:var(--dim);
+}
+.chip[aria-pressed="true"]{background:var(--accent); border-color:var(--accent); color:var(--on-accent)}
+.grid{display:grid; gap:.6em; grid-template-columns:repeat(auto-fill,minmax(20rem,1fr))}
+.card{
+  background:var(--card-bg); border:var(--border-w) solid var(--line);
+  border-radius:var(--radius); backdrop-filter:var(--blur);
+  box-shadow:var(--shadow), var(--card-inset);
+  padding:.6em .7em; cursor:pointer; display:flex; flex-direction:column; gap:.4em;
+  transition:box-shadow .15s, border-color .15s, transform .15s;
+}
+.card:hover{border-color:var(--accent); box-shadow:var(--hover-shadow), var(--card-inset)}
+.card.stale{opacity:.6}
+.card.gone{border-style:dashed; color:var(--gone)}
+.card h2{font-size:.95rem; margin:0; display:flex; justify-content:space-between;
+         gap:.4em; align-items:baseline;
+         text-transform:var(--title-transform); letter-spacing:var(--title-spacing)}
+.card h2 em{font-style:normal; color:var(--dim); font-weight:400; font-size:.62rem;
+            white-space:nowrap}
+.rows{display:grid; grid-template-columns:auto 1fr; gap:.2em .5em; font-size:.8rem}
+.rows b{color:var(--dim); font-weight:500; white-space:nowrap;
+        text-transform:var(--label-transform)}
+.rows span{overflow:hidden; display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical}
+.meta{font-size:.68rem; color:var(--dim); border-top:1px solid var(--line); padding-top:.4em}
+.flag{color:var(--flag)}
+.src{font-size:.62rem; color:var(--dim); opacity:.85}
+.empty{color:var(--dim); font-style:italic}
+.back{background:none; border:none; color:var(--accent); padding:0; margin-bottom:.5em;
+      font-size:.8rem}
+.split{display:grid; grid-template-columns:minmax(14rem,26%) 1fr; gap:.8em; align-items:start}
+.list{display:flex; flex-direction:column; gap:.35em; max-height:78vh; overflow:auto}
+.sess{
+  background:var(--card-bg); border:var(--border-w) solid var(--line);
+  border-radius:var(--radius); padding:.45em .6em; cursor:pointer;
+  backdrop-filter:var(--blur)
+}
+.sess:hover,.sess[aria-current="true"]{border-color:var(--accent)}
+.sess .t{font-size:.82rem; font-weight:600}
+.sess .m{font-size:.66rem; color:var(--dim)}
+.pane{background:var(--card-bg); border:var(--border-w) solid var(--line);
+      border-radius:var(--radius); box-shadow:var(--shadow), var(--card-inset);
+      backdrop-filter:var(--blur); padding:.8em; max-height:78vh; overflow:auto}
+.turn{border-left:2px solid var(--line); padding:.1em 0 .7em .6em; margin-left:.15em}
+.turn.err{border-left-color:var(--flag)}
+.you{background:var(--bg); border-radius:.34em; padding:.45em .55em; white-space:pre-wrap;
+     font-size:.85rem; border:1px solid var(--line)}
+.you.slash{color:var(--dim); font-size:.7rem}
+.said{color:var(--dim); font-size:.74rem; margin-top:.35em; white-space:pre-wrap}
+.tags{display:flex; gap:.25em; flex-wrap:wrap; margin-top:.35em}
+.tag{font-size:.62rem; background:var(--bg); border:1px solid var(--line);
+     border-radius:.25em; padding:.1em .35em; color:var(--dim)}
+h3{font-size:.66rem; margin:.9em 0 .4em; color:var(--dim); text-transform:uppercase;
+   letter-spacing:.08em}
+h3:first-child{margin-top:0}
+.heat{margin-top:1em; background:var(--card-bg); border:var(--border-w) solid var(--line);
+      border-radius:var(--radius); box-shadow:var(--shadow), var(--card-inset);
+      backdrop-filter:var(--blur); padding:.7em; overflow-x:auto}
+.heatgrid{display:grid; grid-auto-flow:column; grid-template-rows:repeat(7,.62em); gap:.12em}
+.cell{width:.62em; height:.62em; border-radius:var(--cell-radius); background:var(--cell0);
+      cursor:pointer}
+.cell:hover{outline:2px solid var(--accent)}
+.hit{background:var(--card-bg); border:var(--border-w) solid var(--line);
+     border-radius:var(--radius); backdrop-filter:var(--blur);
+     padding:.5em .6em; margin-bottom:.35em; cursor:pointer; font-size:.85rem}
+.hit:hover{border-color:var(--accent)}
+.hit .w{font-size:.64rem; color:var(--dim); margin-bottom:.2em}
+mark{background:var(--accent); color:var(--on-accent); border-radius:3px; padding:0 2px}
+.note{color:var(--dim); font-size:.7rem; margin:.45em 0}
+.dot{width:.42em; height:.42em; border-radius:50%; display:inline-block; margin-right:.3em;
+     vertical-align:middle; flex:none}
+.dot.green{background:var(--ok)} .dot.yellow{background:#dfa01b}
+.dot.grey{background:var(--gone)} .dot.none{background:transparent; border:1px solid var(--line)}
+.actions{display:flex; gap:.35em; flex-wrap:wrap; margin:0 0 .6em}
+.actions button{font-size:.7rem; padding:.3em .55em}
+kbd{font:.58rem/1 ui-monospace,monospace; border:1px solid var(--line); border-bottom-width:2px;
+    border-radius:4px; padding:.1em .3em; color:var(--dim)}
+
+/* ── 外觀主題 ──────────────────────────────────────────────────────────
+   色票取自 Fable-5.1-100-HTML-Files 的 10 個 demo（隨機抽樣）。
+   只重新定義變數，不動任何版面規則。必須排在 data-theme 區塊之後 ——
+   特性值相同，靠原始碼順序取勝。 */
+
+/* 005 liquid-metal — 拉絲金屬面板 + 上緣高光 + 細噪點 */
+:root[data-skin="metal"]{
+  --bg:#101113; --panel:#1b1c1f; --line:#34373d; --ink:#f4f4f2; --dim:#9a9a97;
+  --accent:#cfd6de; --flag:#e5745f; --ok:#8fd6a8; --gone:#5c5e63;
+  --cell0:#1f2124; --cell1:#3a3d43; --cell2:#5b6069; --cell3:#868d98; --cell4:#cfd6de;
+  --on-accent:#101113;
+  --radius:5px; --chip-radius:3px; --cell-radius:1px;
+  --card-bg:linear-gradient(180deg,#26282c 0%,#191a1d 100%);
+  --shadow:inset 0 1px 0 rgba(255,255,255,.10), 0 10px 24px rgba(0,0,0,.55);
+  --hover-shadow:inset 0 1px 0 rgba(255,255,255,.20), 0 14px 32px rgba(0,0,0,.65);
+  --head-shadow:inset 0 1px 0 rgba(255,255,255,.08);
+  --title-transform:uppercase; --title-spacing:.2em; --label-transform:uppercase;
+  --texture:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  --texture-op:.04; --texture-blend:overlay;
+}
+
+/* 009 gradient-mesh — 毛玻璃 + 大圓角 + 背景暈染色團 */
+:root[data-skin="mesh"]{
+  --bg:#140b26; --panel:#1f1436; --line:rgba(255,250,240,.16); --ink:#fffaf0; --dim:#b8adc9;
+  --accent:#ff6b57; --flag:#ff4d2e; --ok:#5be7a9; --gone:#6a5c80;
+  --cell0:#231741; --cell1:#3d2a6b; --cell2:#6b3fb0; --cell3:#b85ba0; --cell4:#ff6b57;
+  --on-accent:#1a1030;
+  --radius:20px; --chip-radius:999px; --cell-radius:50%; --border-w:1px;
+  --card-bg:rgba(255,250,240,.055);
+  --blur:blur(16px) saturate(135%);
+  --shadow:inset 0 0 0 1px rgba(255,255,255,.10), 0 20px 50px rgba(0,0,0,.45);
+  --hover-shadow:inset 0 0 0 1px rgba(255,255,255,.22), 0 24px 60px rgba(0,0,0,.55);
+  --title-transform:uppercase; --title-spacing:.24em;
+  --page-bg:radial-gradient(65vw 65vw at 12% 8%, rgba(123,77,255,.38), transparent 62%),
+            radial-gradient(55vw 55vw at 88% 18%, rgba(255,107,87,.30), transparent 62%),
+            radial-gradient(60vw 60vw at 55% 98%, rgba(20,184,166,.26), transparent 62%), #140b26;
+}
+
+/* 027 lava-lamp — 圓潤燈罩 + 暖色輝光 + 壁面斜紋 */
+:root[data-skin="lava"]{
+  --bg:#1d120b; --panel:#2e1c11; --line:rgba(255,200,120,.30); --ink:#f6e3a1; --dim:#c99b3c;
+  --accent:#ffd27a; --flag:#e0603a; --ok:#9aa83c; --gone:#7a5516;
+  --cell0:#2a190f; --cell1:#5a3420; --cell2:#7a5516; --cell3:#c99b3c; --cell4:#ffd27a;
+  --on-accent:#3a0c02;
+  --radius:26px; --chip-radius:999px; --cell-radius:50%;
+  --card-bg:linear-gradient(180deg,#3d2616 0%,#221408 100%);
+  --shadow:inset 0 1px 0 rgba(255,200,120,.20), 0 12px 34px rgba(0,0,0,.6);
+  --hover-shadow:inset 0 1px 0 rgba(255,200,120,.35), 0 0 28px rgba(255,140,60,.28),
+                 0 12px 34px rgba(0,0,0,.6);
+  --font:Georgia,"Iowan Old Style",Palatino,ui-serif,serif;
+  --page-bg:radial-gradient(75vw 55vh at 50% 0%, #6b3e22 0%, #1d120b 72%), #1d120b;
+  --texture:repeating-linear-gradient(45deg, rgba(138,90,43,.16) 0 6px, transparent 6px 26px);
+  --texture-op:.45;
+}
+
+/* 028 mandala — 深玻璃 + 琥珀描邊 + 超寬字距標籤 */
+:root[data-skin="mandala"]{
+  --bg:#0d0e10; --panel:#1a1b1e; --line:rgba(255,255,255,.14); --ink:#e8e6df; --dim:#8b8c91;
+  --accent:#f0b35a; --flag:#ff5e3a; --ok:#a7f3d0; --gone:#5a5c62;
+  --cell0:#1a1208; --cell1:#3d2a10; --cell2:#8a5f1e; --cell3:#c88a2e; --cell4:#f0b35a;
+  --on-accent:#1a1208;
+  --radius:8px; --chip-radius:999px; --cell-radius:50%;
+  --card-bg:rgba(255,255,255,.06);
+  --blur:blur(18px) saturate(140%);
+  --shadow:inset 0 1px 0 rgba(255,255,255,.08), 0 20px 50px rgba(0,0,0,.5);
+  --hover-shadow:inset 0 1px 0 rgba(240,179,90,.35), 0 20px 50px rgba(0,0,0,.5);
+  --title-transform:uppercase; --title-spacing:.3em; --label-transform:uppercase;
+  --page-bg:radial-gradient(80vw 70vh at 50% 40%, #1a1208 0%, #0d0e10 70%), #0d0e10;
+}
+
+/* 034 vaporwave — 直角硬邊 + 霓虹輝光 + 網格 */
+:root[data-skin="vapor"]{
+  --bg:#12002a; --panel:#2b0a5e; --line:#b967ff; --ink:#f4e9ff; --dim:#b98fd6;
+  --accent:#ff71ce; --flag:#ff4d6d; --ok:#05ffa1; --gone:#6b3fb0;
+  --cell0:#22084a; --cell1:#4a1580; --cell2:#8a2fb5; --cell3:#d155d8; --cell4:#ff71ce;
+  --on-accent:#12002a;
+  --radius:0px; --chip-radius:0px; --cell-radius:0px; --border-w:2px;
+  --card-bg:rgba(43,10,94,.72);
+  --shadow:0 0 18px rgba(1,205,254,.28);
+  --hover-shadow:0 0 30px rgba(255,113,206,.6);
+  --card-inset:inset 0 0 22px rgba(1,205,254,.18);
+  --title-transform:uppercase; --title-spacing:.3em; --label-transform:uppercase;
+  --font:ui-monospace,'SF Mono',Menlo,'Courier New',monospace;
+  --page-bg:linear-gradient(180deg,#12002a 0%,#2b0a5e 55%,#6a1d8a 100%);
+  --texture:repeating-linear-gradient(90deg, rgba(1,205,254,.16) 0 2px, transparent 2px 80px),
+            repeating-linear-gradient(0deg, rgba(255,113,206,.12) 0 2px, transparent 2px 80px);
+  --texture-op:.55;
+}
+:root[data-skin="vapor"] h1{text-shadow:0 0 10px var(--accent), 0 0 26px rgba(255,113,206,.65)}
+:root[data-skin="vapor"] .card h2{text-shadow:0 0 8px rgba(1,205,254,.5)}
+
+/* 055 newspaper — 零圓角 + 雙線報頭 + 內雙框 + 紙紋 */
+:root[data-skin="paper"]{
+  --bg:#e9dcc0; --panel:#f3e9d2; --line:#2a2520; --ink:#1d1a17; --dim:#3a342c;
+  --accent:#a8261c; --flag:#a8261c; --ok:#2f5a2a; --gone:#8a8073;
+  --cell0:#d9c9a6; --cell1:#b9a884; --cell2:#8a7d62; --cell3:#5a5040; --cell4:#1d1a17;
+  --on-accent:#e9dcc0;
+  --radius:0px; --chip-radius:0px; --cell-radius:0px;
+  --card-inset:inset 0 0 0 3px var(--panel), inset 0 0 0 4px var(--line);
+  --head-border:3px double var(--line);
+  --title-transform:uppercase; --title-spacing:.12em; --label-transform:uppercase;
+  --font:'Iowan Old Style','Palatino Linotype',Palatino,'Book Antiqua',Georgia,ui-serif,serif;
+  --texture:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='d'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.08' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23d)'/%3E%3C/svg%3E");
+  --texture-op:.12; --texture-blend:multiply;
+}
+:root[data-skin="paper"] .card{padding:1em 1.1em}
+:root[data-skin="paper"] h3{border-bottom:1px solid var(--line); padding-bottom:.2em}
+
+/* 071 atomic-age — 粗框 + 硬投影 + 膠囊 + 稿紙橫線 */
+:root[data-skin="atomic"]{
+  --bg:#f7efdc; --panel:#fffdf6; --line:#2b2a2e; --ink:#1f1e22; --dim:#5b5762;
+  --accent:#f26b5b; --flag:#c94d3f; --ok:#3fb8af; --gone:#9a9486;
+  --cell0:#efe3c4; --cell1:#e8d08a; --cell2:#e3b23c; --cell3:#d98b4a; --cell4:#f26b5b;
+  --on-accent:#fffdf6;
+  --radius:18px; --chip-radius:999px; --cell-radius:50%; --border-w:3px;
+  --shadow:6px 6px 0 var(--ink);
+  --hover-shadow:9px 9px 0 var(--accent);
+  --title-transform:uppercase; --title-spacing:.22em;
+  --font:'Helvetica Neue',Helvetica,Arial,ui-sans-serif,system-ui,sans-serif;
+  --texture:repeating-linear-gradient(0deg, transparent 0 34px, rgba(43,42,46,.05) 34px 35px);
+  --texture-op:1; --texture-blend:multiply;
+}
+:root[data-skin="atomic"] .card:hover{transform:translate(-3px,-3px)}
+:root[data-skin="atomic"] .chip[aria-pressed="true"]{box-shadow:3px 3px 0 var(--ink)}
+
+/* 093 zen — 無邊框 + 大圓角 + 柔霧陰影 */
+:root[data-skin="zen"]{
+  --bg:#12181c; --panel:#1a2228; --line:rgba(228,238,242,.10); --ink:#e4eef2; --dim:#93a6ae;
+  --accent:#7fd4e8; --flag:#e88f7f; --ok:#9fe0b8; --gone:#5a6a72;
+  --cell0:#1b242a; --cell1:#2c3f47; --cell2:#3f5f6b; --cell3:#5ba0b5; --cell4:#7fd4e8;
+  --on-accent:#12181c;
+  --radius:24px; --chip-radius:999px; --cell-radius:50%; --border-w:0px;
+  --card-bg:rgba(228,238,242,.05);
+  --blur:blur(10px);
+  --shadow:0 14px 44px rgba(0,0,0,.38);
+  --hover-shadow:0 18px 54px rgba(127,212,232,.20);
+  --head-border:0;
+  --title-spacing:.16em;
+  --page-bg:radial-gradient(90vw 70vh at 50% -15%, #1d2f38 0%, #12181c 68%), #12181c;
+}
+
+/* 096 thermal — 掃描線 + 儀器邊框 + 等寬全大寫 */
+:root[data-skin="thermal"]{
+  --bg:#07080a; --panel:#14161a; --line:#2b2e34; --ink:#d7dbd2; --dim:#7c8378;
+  --accent:#ffb347; --flag:#ff5a1f; --ok:#9be07a; --gone:#4a4f48;
+  --cell0:#12141a; --cell1:#4f7cff; --cell2:#9be07a; --cell3:#ffb347; --cell4:#ff5a1f;
+  --on-accent:#07080a;
+  --radius:3px; --chip-radius:2px; --cell-radius:1px;
+  --card-bg:linear-gradient(180deg,#1a1c20 0%,#0f1114 100%);
+  --shadow:inset 0 1px 1px rgba(255,255,255,.09), 0 6px 18px rgba(0,0,0,.6);
+  --hover-shadow:inset 0 1px 1px rgba(255,255,255,.18), 0 0 16px rgba(255,179,71,.25);
+  --card-inset:inset 0 0 0 1px rgba(255,255,255,.045);
+  --title-transform:uppercase; --title-spacing:.14em; --label-transform:uppercase;
+  --font:ui-monospace,'SF Mono',Menlo,Consolas,'Courier New',monospace;
+  --texture:repeating-linear-gradient(0deg, rgba(0,0,0,.20) 0 1px, transparent 1px 3px);
+  --texture-op:1;
+}
+
+/* 099 water-ripple — 水面漸層 + 銀線玻璃 + 深投影 */
+:root[data-skin="ripple"]{
+  --bg:#05071a; --panel:#0e1538; --line:rgba(217,223,240,.22); --ink:#d9dff0; --dim:#7a84a8;
+  --accent:#ffb35c; --flag:#ff7a6b; --ok:#7fd8c0; --gone:#4a5480;
+  --cell0:#0c1236; --cell1:#1a2352; --cell2:#3a4a8c; --cell3:#7a84a8; --cell4:#ffb35c;
+  --on-accent:#05071a;
+  --radius:14px; --chip-radius:999px; --cell-radius:50%;
+  --card-bg:linear-gradient(180deg, rgba(217,223,240,.09), rgba(217,223,240,.02));
+  --blur:blur(10px) saturate(1.2);
+  --shadow:inset 0 0 0 1px rgba(255,255,255,.04), 0 20px 60px -20px rgba(0,0,0,.85);
+  --hover-shadow:inset 0 0 0 1px rgba(217,223,240,.28), 0 0 18px rgba(255,179,92,.22),
+                 0 20px 60px -20px rgba(0,0,0,.85);
+  --title-transform:uppercase; --title-spacing:.28em;
+  --page-bg:linear-gradient(180deg,#05071a 0%,#0b1030 52%,#1a2352 100%);
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>CLI History <small id="tally"></small></h1>
+  <input id="q" placeholder="搜尋所有 prompt（2 字中文也可以，@專案名 可限定範圍）…" autocomplete="off">
+  <select id="sort">
+    <option value="recent">最近活動</option>
+    <option value="stale">停滯最久</option>
+    <option value="flags">紅旗優先</option>
+    <option value="volume">prompt 量</option>
+  </select>
+  <select id="skin" title="外觀主題">
+    <option value="">預設</option>
+    <option value="metal">石墨金屬</option>
+    <option value="mesh">珊瑚紫霧</option>
+    <option value="lava">黃銅熔岩</option>
+    <option value="mandala">琥珀曼陀羅</option>
+    <option value="vapor">蒸汽波</option>
+    <option value="paper">報紙頭版</option>
+    <option value="atomic">原子時代</option>
+    <option value="zen">靜水禪</option>
+    <option value="thermal">熱顯像</option>
+    <option value="ripple">靛藍水面</option>
+  </select>
+  <button id="fsdec" title="字體縮小">A−</button>
+  <button id="fsinc" title="字體放大">A+</button>
+  <button id="theme" title="明暗切換">◐</button>
+  <button id="reindex" title="重新索引">↻</button>
+</header>
+
+<main>
+  <section id="overview">
+    <div class="chips">
+      <button class="chip" data-f="next" aria-pressed="false">有未完成的 Next</button>
+      <button class="chip" data-f="active" aria-pressed="false">30 天內活躍</button>
+      <button class="chip" data-f="flags" aria-pressed="false">有紅旗</button>
+      <button class="chip" data-f="evap" aria-pressed="false">過程已蒸發</button>
+      <button class="chip" data-f="gone" aria-pressed="false">顯示已刪除的專案</button>
+      <button class="chip" data-f="container" aria-pressed="false">顯示容器目錄</button>
+      <button class="chip" id="feed">最近動態 →</button>
+    </div>
+    <div class="grid" id="grid"></div>
+    <div class="heat">
+      <h3>活動熱度（點一天跳過去）</h3>
+      <div class="heatgrid" id="heat"></div>
+    </div>
+  </section>
+
+  <section id="detail" hidden></section>
+  <section id="results" hidden></section>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+const api = p => fetch(p).then(r => r.json());
+const esc = s => (s ?? "").replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+const DAY = 864e5;
+
+let STATE = { projects: [], filters: new Set(), sort: "recent", query: "" };
+
+const LIGHT = {
+  green:  "綠燈：最後一次 commit 在最後一則 prompt 之後，已落實",
+  yellow: "黃燈：工作區有未提交的變更，正在產出中",
+  grey:   "灰燈：談過但 commit 沒跟上",
+};
+
+function gitLine(p) {
+  if (!p.is_git) return "";
+  const bits = [`⎇ ${esc(p.git_branch || "?")}`, `${p.git_commits ?? "?"} commits`];
+  if (p.git_dirty) bits.push(`<span class="flag">${p.git_dirty} 個未提交</span>`);
+  if (p.git_last_msg) bits.push(`「${esc(p.git_last_msg.slice(0, 34))}」`);
+  return `<br>${bits.join(" · ")}`;
+}
+
+/* ── 共用 ─────────────────────────────────────────────────────── */
+const days = iso => iso ? Math.floor((Date.now() - Date.parse(iso)) / DAY) : null;
+const date = iso => iso ? new Date(iso).toLocaleDateString("zh-TW",
+  { year: "2-digit", month: "2-digit", day: "2-digit" }) : "—";
+
+function ago(iso) {
+  const d = days(iso);
+  if (d === null) return "無紀錄";
+  if (d === 0) return "今天";
+  if (d === 1) return "昨天";
+  return `${d} 天前`;
+}
+
+function show(id) {
+  for (const s of ["overview", "detail", "results"]) $("#" + s).hidden = (s !== id);
+}
+
+function highlight(text, q) {
+  const safe = esc(text);
+  if (!q) return safe;
+  const needle = esc(q).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return safe.replace(new RegExp(needle, "gi"), m => `<mark>${m}</mark>`);
+}
+
+function hitList(hits, q, stamp = h => date(h.ts)) {
+  return hits.map(h => `
+    <div class="hit" data-p="${h.project_id}" data-s="${esc(h.session_id)}">
+      <div class="w">${esc(h.display_name || "?")} › ${esc(h.title || h.session_id.slice(0, 8))} · ${stamp(h)}</div>
+      <div>${highlight(h.text.slice(0, 300), q)}</div>
+    </div>`).join("") || '<p class="empty">沒有命中。</p>';
+}
+
+async function copy(text, btn) {
+  try { await navigator.clipboard.writeText(text); } catch { return; }
+  const was = btn.textContent;
+  btn.textContent = "已複製 ✓";
+  setTimeout(() => { btn.textContent = was; }, 1200);
+}
+
+/* ── 視圖 1：專案進度總覽 ─────────────────────────────────────── */
+async function loadOverview() {
+  const params = new URLSearchParams({
+    include_gone: STATE.filters.has("gone"),
+    include_containers: STATE.filters.has("container"),
+  });
+  const data = await api("/api/overview?" + params);
+  STATE.projects = data.projects;
+  $("#tally").textContent =
+    `${data.projects.length} 專案 · ${data.projects.reduce((a, p) => a + p.prompt_count, 0)} prompts`;
+  renderGrid();
+}
+
+function passes(p) {
+  const f = STATE.filters;
+  if (f.has("next") && !p.next_step) return false;
+  if (f.has("active") && (days(p.last_seen) ?? 1e9) > 30) return false;
+  if (f.has("flags") && !p.hotspots.length) return false;
+  if (f.has("evap") && p.live_sessions > 0) return false;
+  return true;
+}
+
+function renderGrid() {
+  const sorters = {
+    recent: (a, b) => (b.last_seen || "").localeCompare(a.last_seen || ""),
+    stale:  (a, b) => (a.last_seen || "").localeCompare(b.last_seen || ""),
+    flags:  (a, b) => b.hotspots.length - a.hotspots.length ||
+                      (b.last_seen || "").localeCompare(a.last_seen || ""),
+    volume: (a, b) => b.prompt_count - a.prompt_count,
+  };
+  const list = STATE.projects.filter(passes).sort(sorters[STATE.sort]);
+  $("#grid").innerHTML = list.length
+    ? list.map(card).join("")
+    : `<p class="empty">沒有符合的專案。</p>`;
+}
+
+function card(p) {
+  const d = days(p.last_seen);
+  const cls = ["card"];
+  if (!p.exists_on_disk) cls.push("gone");
+  else if (d !== null && d > 30) cls.push("stale");
+
+  const row = (label, value) => value
+    ? `<b>${label}</b><span>${esc(value)}</span>` : "";
+  const body = [
+    row("目標", p.goal), row("狀態", p.state), row("下一步", p.next_step),
+  ].filter(Boolean).join("");
+
+  const evaporated = p.session_count - p.live_sessions;
+  const bits = [
+    `${p.prompt_count} prompts`, `${p.session_count} sessions`,
+    p.commits ? `${p.commits} commits` : null,
+    p.files ? `改 ${p.files} 檔` : null,
+  ].filter(Boolean).join(" · ");
+
+  return `<article class="${cls.join(" ")}" data-id="${p.id}">
+    <h2><span><i class="dot ${p.light || "none"}" title="${LIGHT[p.light] || "非 git repo"}"></i>${esc(p.display_name)}</span>
+        <em>${p.is_container ? "📁 容器 · " : ""}${p.exists_on_disk ? "" : "🗑 已刪除 · "}${ago(p.last_seen)}</em></h2>
+    ${body ? `<div class="rows">${body}</div>`
+           : `<p class="empty">尚無可抽取的進度訊號</p>`}
+    <div class="meta">
+      ${bits}
+      ${gitLine(p)}
+      ${evaporated ? `<br>⏳ ${evaporated} 個 session 的過程已蒸發` : ""}
+      ${p.hotspots.map(h => `<br><span class="flag">🚩 ${esc(h.path.split(/[\\/]/).pop())} 被改 ${h.n} 次</span>`).join("")}
+      ${p.last_prompt ? `<br>最後「${esc(p.last_prompt.text.slice(0, 46))}」${date(p.last_prompt.ts)}` : ""}
+      ${p.sources.length ? `<br><span class="src">來源 ${p.sources.map(esc).join(" · ")}</span>` : ""}
+    </div>
+  </article>`;
+}
+
+/* ── 視圖 2：單一專案鑽取 ─────────────────────────────────────── */
+async function openProject(id, focusSession) {
+  const { project, sessions } = await api("/api/project/" + id);
+  show("detail");
+  $("#detail").innerHTML = `
+    <button class="back">← 回總覽</button>
+    <h2 style="margin:0 0 4px">
+      <i class="dot ${project.light || "none"}" title="${LIGHT[project.light] || "非 git repo"}"></i>${esc(project.display_name)}</h2>
+    <p class="note">${esc(project.real_path)}${project.exists_on_disk ? "" : " · 🗑 資料夾已不存在"}</p>
+    <div class="actions">
+      <button data-act="code">在 VS Code 開啟</button>
+      <button data-act="path">複製路徑</button>
+      ${project.is_git ? `<button data-act="branch">⎇ ${esc(project.git_branch || "?")}
+        · ${project.git_dirty ? project.git_dirty + " 個未提交" : "工作區乾淨"}</button>` : ""}
+    </div>
+    <div class="split">
+      <div class="list">${sessions.map(sessionRow).join("") || '<p class="empty">無 session</p>'}</div>
+      <div class="pane" id="sesspane"><p class="empty">選一個 session</p></div>
+    </div>`;
+  $("#detail .back").onclick = () => { show("overview"); };
+  $("#detail .list").onclick = e => {
+    const el = e.target.closest(".sess");
+    if (el) openSession(el.dataset.id);
+  };
+  $("#detail .actions").onclick = e => {
+    const act = e.target.dataset.act;
+    if (act === "code") location.href = "vscode://file/" + project.real_path.replace(/\\/g, "/");
+    if (act === "path") copy(project.real_path, e.target);
+  };
+  if (sessions.length) openSession(focusSession || sessions[0].id);
+}
+
+function sessionRow(s) {
+  const gone = s.transcript_state !== "live";
+  return `<div class="sess" data-id="${s.id}">
+    <div class="t">${esc(s.title || "（無標題）")}</div>
+    <div class="m">${date(s.started_at)} · ${s.prompt_count} prompts
+      ${s.files ? ` · 改 ${s.files} 檔` : ""}${s.commits ? ` · ${s.commits} commits` : ""}
+      ${s.errors ? ` · <span class="flag">${s.errors} 錯誤</span>` : ""}
+      ${gone ? " · ⏳ 過程已蒸發" : ""}</div>
+  </div>`;
+}
+
+async function openSession(id) {
+  document.querySelectorAll(".sess").forEach(el =>
+    el.setAttribute("aria-current", el.dataset.id === id));
+  const d = await api("/api/session/" + encodeURIComponent(id));
+  const gone = d.session.transcript_state !== "live";
+
+  const signals = d.signals.filter(s => s.goal || s.next_step || s.state);
+  const turnsByTime = d.turns;
+
+  $("#sesspane").innerHTML = `
+    <div class="actions">
+      <button data-resume="${esc(id)}">複製 claude --resume</button>
+      <span class="src" style="align-self:center">${esc(id)}</span>
+    </div>
+    ${signals.length ? `<h3>進度訊號</h3>` + signals.map(s => `
+      <div class="rows" style="margin-bottom:8px">
+        ${s.goal ? `<b>目標</b><span>${esc(s.goal)}</span>` : ""}
+        ${s.state ? `<b>狀態</b><span>${esc(s.state)}</span>` : ""}
+        ${s.next_step ? `<b>下一步</b><span>${esc(s.next_step)}</span>` : ""}
+        <b>來源</b><span class="src">${esc(s.origin)} · ${date(s.ts)}</span>
+      </div>`).join("") : ""}
+
+    ${d.commits.length ? `<h3>commits</h3>` +
+      d.commits.map(c => `<div class="tag">${esc(c.message)}</div>`).join(" ") : ""}
+
+    ${d.files.length ? `<h3>改過的檔案</h3><div class="tags">` +
+      d.files.map(f => `<span class="tag">${esc(f.path.split(/[\\/]/).pop())}${f.n > 1 ? " ×" + f.n : ""}</span>`).join("") +
+      `</div>` : ""}
+
+    <h3>對話 (${d.prompts.length} prompts)</h3>
+    ${gone ? `<p class="note">⏳ 這個 session 的 transcript 已被 30 天清理刪除，
+              只剩 history.jsonl 裡的 prompt 原文，沒有過程。</p>` : ""}
+    ${d.prompts.map((p, i) => promptBlock(p, turnsByTime, d.prompts[i + 1])).join("")
+      || '<p class="empty">無 prompt</p>'}`;
+
+  $("#sesspane .actions").onclick = e => {
+    const sid = e.target.dataset.resume;
+    if (sid) copy(`claude --resume ${sid}`, e.target);
+  };
+}
+
+function promptBlock(p, turns, nextPrompt) {
+  const from = p.ts, to = nextPrompt ? nextPrompt.ts : "9999";
+  const within = turns.filter(t => t.ts && t.ts >= from && t.ts < to);
+  const err = within.some(t => t.has_error);
+  const tools = [...new Set(within.flatMap(t => JSON.parse(t.tools_json || "[]")))];
+  const said = within.map(t => t.assistant_summary).filter(Boolean).slice(-1)[0];
+  return `<div class="turn${err ? " err" : ""}">
+    <div class="you${p.is_slash ? " slash" : ""}">${esc(p.text)}</div>
+    ${said ? `<div class="said">${esc(said.slice(0, 500))}${said.length > 500 ? "…" : ""}</div>` : ""}
+    ${tools.length ? `<div class="tags">${tools.map(t => `<span class="tag">${esc(t)}</span>`).join("")}</div>` : ""}
+  </div>`;
+}
+
+/* ── 搜尋 ─────────────────────────────────────────────────────── */
+let searchTimer;
+$("#q").addEventListener("input", e => {
+  clearTimeout(searchTimer);
+  const term = e.target.value.trim();
+  if (!term) { show("overview"); return; }
+  searchTimer = setTimeout(() => runSearch(term), 180);
+});
+
+async function runSearch(raw) {
+  // 支援 "@專案名 關鍵字" 限定範圍
+  const scoped = raw.match(/^@(\S+)\s*(.*)$/);
+  const scope = scoped ? scoped[1] : null;
+  const term = scoped ? scoped[2].trim() : raw;
+
+  if (scope && !term) {                       // 只打了 @專案 -> 直接開那個專案
+    const hit = STATE.projects.find(p =>
+      p.display_name.toLowerCase().includes(scope.toLowerCase()));
+    if (hit) { openProject(hit.id); return; }
+  }
+
+  const d = await api("/api/search?q=" + encodeURIComponent(term));
+  let hits = d.hits;
+  if (scope) hits = hits.filter(h =>
+    (h.display_name || "").toLowerCase().includes(scope.toLowerCase()));
+
+  STATE.query = term;
+  show("results");
+  $("#results").innerHTML = `
+    <p class="note">「${esc(term)}」找到 ${hits.length} 筆${scope ? `（限 @${esc(scope)}）` : ""}
+      <span class="src">· ${d.mode === "fts" ? "FTS5 trigram" : "LIKE fallback（查詢短於 3 字元）"}</span></p>
+    ${hitList(hits, term)}`;
+}
+
+$("#results").addEventListener("click", e => {
+  const el = e.target.closest(".hit");
+  if (el) openProject(el.dataset.p, el.dataset.s);
+});
+
+/* ── 熱度圖 ───────────────────────────────────────────────────── */
+async function loadHeat() {
+  const { days: data } = await api("/api/heatmap");
+  if (!data.length) return;
+  const counts = new Map(data.map(d => [d.day, d.n]));
+  const max = Math.max(...counts.values());
+  const start = new Date(data[0].day), end = new Date(data.at(-1).day);
+  start.setDate(start.getDate() - start.getDay());
+  const cells = [];
+  for (let t = +start; t <= +end; t += DAY) {
+    const day = new Date(t).toISOString().slice(0, 10);
+    const n = counts.get(day) || 0;
+    const level = n === 0 ? 0 : Math.min(4, Math.ceil(n / max * 4));
+    cells.push(`<div class="cell" style="background:var(--cell${level})"
+      data-day="${day}" title="${day}：${n} prompts"></div>`);
+  }
+  $("#heat").innerHTML = cells.join("");
+}
+
+$("#heat").addEventListener("click", async e => {
+  const day = e.target.dataset?.day;
+  if (!day) return;
+  const d = await api("/api/day/" + day);
+  show("results");
+  $("#results").innerHTML = `<p class="note">${day} · ${d.hits.length} prompts</p>`
+    + hitList(d.hits, "", h => h.ts.slice(11, 16));
+});
+
+$("#feed").onclick = async () => {
+  const d = await api("/api/recent");
+  show("results");
+  $("#results").innerHTML = `<p class="note">最近 ${d.hits.length} 則 prompt（跨專案）</p>`
+    + hitList(d.hits, "");
+};
+
+/* ── 控制項 ───────────────────────────────────────────────────── */
+$("#grid").addEventListener("click", e => {
+  const el = e.target.closest(".card");
+  if (el) openProject(el.dataset.id);
+});
+
+document.querySelectorAll(".chip").forEach(chip => {
+  chip.onclick = () => {
+    const key = chip.dataset.f;
+    const on = chip.getAttribute("aria-pressed") === "true";
+    chip.setAttribute("aria-pressed", String(!on));
+    on ? STATE.filters.delete(key) : STATE.filters.add(key);
+    (key === "gone" || key === "container") ? loadOverview() : renderGrid();
+  };
+});
+
+$("#sort").onchange = e => { STATE.sort = e.target.value; renderGrid(); };
+
+$("#reindex").onclick = async () => {
+  $("#reindex").textContent = "…";
+  await fetch("/api/reindex", { method: "POST" });
+  await Promise.all([loadOverview(), loadHeat()]);
+  $("#reindex").textContent = "↻";
+};
+
+/* 外觀主題：只換 CSS 變數，版面規則完全不動 */
+function setSkin(name) {
+  const root = document.documentElement;
+  name ? root.setAttribute("data-skin", name) : root.removeAttribute("data-skin");
+  $("#skin").value = name || "";
+  try { localStorage.setItem("clihv-skin", name || ""); } catch {}
+}
+
+$("#skin").onchange = e => setSkin(e.target.value);
+
+/* 字級：整站唯一旋鈕 --fs，A-/A+ 每次 ±2px，範圍 12–40px */
+const FS_MIN = 12, FS_MAX = 40, FS_DEFAULT = 24;
+
+function setFontSize(px) {
+  const size = Math.min(FS_MAX, Math.max(FS_MIN, px));
+  document.documentElement.style.setProperty("--fs", size + "px");
+  try { localStorage.setItem("clihv-fs", size); } catch {}
+  return size;
+}
+
+function currentFontSize() {
+  const raw = getComputedStyle(document.documentElement).getPropertyValue("--fs");
+  return parseFloat(raw) || FS_DEFAULT;
+}
+
+$("#fsinc").onclick = () => setFontSize(currentFontSize() + 2);
+$("#fsdec").onclick = () => setFontSize(currentFontSize() - 2);
+
+$("#theme").onclick = () => {
+  const dark = document.documentElement.getAttribute("data-theme") === "dark";
+  const next = dark ? "light" : "dark";
+  document.documentElement.setAttribute("data-theme", next);
+  try { localStorage.setItem("clihv-theme", next); } catch {}
+};
+
+document.addEventListener("keydown", e => {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+    e.preventDefault();
+    $("#q").focus();
+    $("#q").select();
+  } else if (e.key === "Escape") {
+    $("#q").value = "";
+    show("overview");
+  }
+});
+
+try {
+  const saved = localStorage.getItem("clihv-theme");
+  if (saved) document.documentElement.setAttribute("data-theme", saved);
+  const fs = parseFloat(localStorage.getItem("clihv-fs"));
+  if (fs) setFontSize(fs);
+  const skin = localStorage.getItem("clihv-skin");
+  if (skin) setSkin(skin);
+} catch {}
+
+loadOverview();
+loadHeat();
+</script>
+</body>
+</html>
