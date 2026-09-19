@@ -70,6 +70,29 @@ python indexer.py --full   # 砍掉重建
 標頭的 **📁 資料夾** 會開啟資料夾選擇器：導覽到你放專案的地方 → 「＋加入目前資料夾」。
 可以加多個根目錄，設定存在 DB，重開 server 還在。
 
+移除根目錄時，當初只靠掃描登記、又沒有任何 CLI 資料的專案會一併刪掉 ——
+不然設錯一次（例如選了整個家目錄）就會永久留下一堆 `AppData`、`Downloads` 之類的假專案。
+有 prompt 或 session 的專案永遠保留。
+
+### WSL 資料夾（Windows）
+
+選擇器的 **💾 磁碟機 / WSL** 會列出磁碟機與所有**正在執行**的 WSL 發行版
+（靠 `wsl.exe -l -q` 動態取得，不寫死名稱）。點發行版就能像一般資料夾一樣往下走：
+
+```
+💾 磁碟機 / WSL  →  WSL · <發行版>  →  home  →  <使用者>  →  projects  →  ＋加入
+```
+
+也可以直接在下方輸入框貼 UNC 路徑：
+
+```
+\\wsl.localhost\<發行版>\home\<使用者>\code
+\\wsl$\<發行版>\home\<使用者>\code          # 舊版 Windows 用這個
+```
+
+發行版要在執行中才讀得到（`wsl -l -v` 看 STATE）。
+路徑拼接一律在後端做，所以 UNC、網路磁碟機、非 Windows 路徑都不會拼錯。
+
 `CLIHV_PROJECT_ROOT` 環境變數只作為**首次啟動的預設值**，之後以網頁上的設定為準：
 
 ```bash
@@ -230,7 +253,7 @@ jsonl 是 append-only，所以 `scan_state` 記錄每個檔案的 `(mtime, size,
 |---|---|
 | `GET /api/overview?include_gone=&include_containers=&only_history=` | 專案進度卡（會順手掃描資料夾並對帳存在與否） |
 | `GET /api/roots` · `POST /api/roots` | 讀取／整批覆寫要掃描的專案根目錄 |
-| `GET /api/browse?path=` | 列出某目錄的子目錄，給資料夾選擇器用。**只回目錄名稱，不讀任何檔案內容**；`path` 留空時 Windows 回磁碟機清單 |
+| `GET /api/browse?path=` | 列出某目錄的子目錄（`{name, path}`，路徑由後端拼）。**只回目錄名稱，不讀任何檔案內容**；`path` 留空時 Windows 回磁碟機 + 執行中的 WSL 發行版 |
 | `GET /api/project/{id}` | 專案詳情 + session 列表 |
 | `GET /api/session/{id}` | prompt / turn / 改檔 / 指令 / commit / 進度訊號 |
 | `GET /api/search?q=&limit=` | 全文搜尋（FTS5，短查詢自動退回 LIKE） |

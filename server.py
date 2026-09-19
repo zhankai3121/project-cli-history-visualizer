@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import subprocess
 import webbrowser
 from pathlib import Path
 
@@ -276,18 +277,52 @@ def set_roots(payload: dict):
     return {"roots": roots}
 
 
+def wsl_distros():
+    """列出 WSL 發行版，回傳 [(名稱, UNC 路徑)]。非 Windows 或沒裝就回空。"""
+    if os.name != "nt":
+        return []
+    try:
+        done = subprocess.run(["wsl.exe", "-l", "-q"], capture_output=True, timeout=8)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if done.returncode != 0:
+        return []
+    raw = done.stdout
+    for encoding in ("utf-16-le", "utf-8", "mbcs"):     # wsl.exe 通常吐 UTF-16LE
+        try:
+            text = raw.decode(encoding)
+            if "\x00" not in text:
+                break
+        except (UnicodeDecodeError, LookupError):
+            continue
+    else:
+        return []
+    out = []
+    for name in (n.strip().strip("﻿") for n in text.splitlines()):
+        if not name:
+            continue
+        unc = f"\\\\wsl.localhost\\{name}"
+        if Path(unc).is_dir():
+            out.append((name, unc))
+    return out
+
+
 @app.get("/api/browse")
 def browse(path: str = ""):
     """列出某個目錄底下的子目錄，給前端的資料夾選擇器用。
 
-    只回目錄名稱，不讀任何檔案內容。path 留空時：Windows 回磁碟機清單，
-    其他系統回根目錄。
+    只回目錄名稱與完整路徑，不讀任何檔案內容。
+    path 留空時：Windows 回磁碟機 + WSL 發行版，其他系統回根目錄。
+    路徑拼接一律在後端做 —— 前端自己接字串在 UNC 路徑上會出錯。
     """
     if not path:
         if os.name == "nt":
-            drives = [f"{c}:\\" for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-                      if Path(f"{c}:\\").exists()]
-            return {"path": "", "parent": None, "dirs": drives,
+            entries = [{"name": f"{c}:", "path": f"{c}:\\"}
+                       for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                       if Path(f"{c}:\\").exists()]
+            entries += [{"name": f"WSL · {name}", "path": unc}
+                        for name, unc in wsl_distros()]
+            return {"path": "", "parent": None, "dirs": entries,
                     "home": str(Path.home())}
         path = "/"
 
@@ -296,15 +331,17 @@ def browse(path: str = ""):
         raise HTTPException(404, "不是資料夾")
     try:
         dirs = sorted(
-            (p.name for p in here.iterdir()
+            ({"name": p.name, "path": str(p)} for p in here.iterdir()
              if p.is_dir() and not p.name.startswith(".")
              and p.name.lower() not in indexer.SKIP_DIRS),
-            key=str.lower)
+            key=lambda d: d["name"].lower())
     except OSError as exc:
         raise HTTPException(403, f"讀不到: {exc}")
 
-    parent = str(here.parent) if here.parent != here else ""
-    return {"path": str(here), "parent": parent, "dirs": dirs,
+    parent = here.parent
+    # UNC 根（\\wsl.localhost\Ubuntu）再往上沒有意義，回磁碟機/發行版清單
+    parent_str = "" if parent == here or str(parent) == str(here) else str(parent)
+    return {"path": str(here), "parent": parent_str, "dirs": dirs,
             "home": str(Path.home())}
 
 

@@ -47,7 +47,12 @@ DEFAULT_ROOT = Path(os.environ.get("CLIHV_PROJECT_ROOT")
 # 掃描專案資料夾時要跳過的目錄名
 SKIP_DIRS = {"node_modules", ".venv", "venv", "env", "__pycache__", "vendor",
              "dist", "build", "target", "out", "bin", "obj", "runtime",
-             "site-packages", "backup", ".git", ".idea", ".vscode"}
+             "site-packages", "backup", ".git", ".idea", ".vscode",
+             # Windows 使用者設定檔的系統資料夾與相容性 junction，不是專案
+             "appdata", "application data", "cookies", "nethood", "printhood",
+             "recent", "sendto", "templates", "local settings", "my documents",
+             "favorites", "links", "saved games", "searches", "contacts",
+             "onedrive", "start menu", "微軟", "3d objects"}
 
 
 # ── 小工具 ────────────────────────────────────────────────────────────────
@@ -434,7 +439,12 @@ def _is_project_dir(path):
 
 
 def scan_project_dirs(con, resolver):
-    """掃描設定的根目錄，把找到的專案資料夾登記進 project 表。回傳新增數。"""
+    """掃描設定的根目錄，把找到的專案資料夾登記進 project 表。
+
+    回傳 (新增, 清掉的孤兒)。移除根目錄之後，當初靠掃描登記、又沒有任何
+    CLI 資料的專案會被刪掉 —— 否則設錯一次根目錄（例如整個家目錄）就會
+    永久留下一堆 AppData / Downloads 之類的假專案。
+    """
     known = {r["real_path"].lower()
              for r in con.execute("SELECT real_path FROM project")}
     found, added = [], 0
@@ -462,12 +472,33 @@ def scan_project_dirs(con, resolver):
                         or str(grand).lower() in known):
                     found.append(grand)
 
+    live = set()
     for path in found:
         if str(path).lower() not in known:
             added += 1
         pid = resolver.project(str(path))
         con.execute("UPDATE project SET is_scanned = 1 WHERE id = ?", (pid,))
-    return added
+        live.add(pid)
+
+    # 清孤兒：當初靠掃描登記、現在不在任何根目錄底下、又完全沒有 CLI 資料的，
+    # 直接刪掉。任何一張表還參照到就保留（外鍵會擋，而且那代表真的有資料），
+    # 只取消 is_scanned 標記。
+    refs = ("prompt", "session", "turn", "file_touch", "command_run",
+            "commit_ref", "progress_signal")
+    unreferenced = " AND ".join(
+        f"id NOT IN (SELECT project_id FROM {t} WHERE project_id IS NOT NULL)"
+        for t in refs)
+    orphans = [r["id"] for r in
+               con.execute(f"SELECT id FROM project WHERE is_scanned = 1 AND {unreferenced}")
+               if r["id"] not in live]
+    for pid in orphans:
+        con.execute("DELETE FROM project WHERE id = ?", (pid,))
+    con.execute(
+        "UPDATE project SET is_scanned = 0 WHERE is_scanned = 1 AND id NOT IN (%s)"
+        % (",".join("?" * len(live)) or "NULL"), tuple(live))
+
+    resolver.cache.clear()      # 刪過 row，快取的 id 可能失效
+    return added, len(orphans)
 
 
 def sync_disk_projects(con):
@@ -583,7 +614,7 @@ def run(full=False):
     con.commit()
 
     memories = index_memory_files(con, resolver)
-    scanned = scan_project_dirs(con, resolver)
+    scanned, orphans = scan_project_dirs(con, resolver)
     appeared, vanished = sync_disk_projects(con)
     repos = collect_git(con)
     rollup(con)
@@ -598,16 +629,17 @@ def run(full=False):
 
     print(f"索引完成 {time.time() - started:.2f}s  "
           f"(+{prompts} prompts, +{turns} turns, +{memories} memory 檔, "
-          f"專案 +{appeared} / -{vanished}, 掃描新增 {scanned}, git repo {repos})")
+          f"專案 +{appeared} / -{vanished}, 掃描 +{scanned} / 清孤兒 {orphans}, "
+          f"git repo {repos})")
     print("  " + " · ".join(f"{k} {v}" for k, v in stats.items()))
     return stats
 
 
 def sync_only(con):
     """server 每次要專案清單時呼叫：掃資料夾 + stat，不重解析 jsonl。"""
-    scanned = scan_project_dirs(con, Resolver(con))
+    scanned, orphans = scan_project_dirs(con, Resolver(con))
     appeared, vanished = sync_disk_projects(con)
-    if scanned or appeared or vanished:
+    if scanned or orphans or appeared or vanished:
         rollup(con)
     con.commit()
     return appeared, vanished

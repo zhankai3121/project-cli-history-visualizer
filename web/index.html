@@ -183,6 +183,8 @@ kbd{font:.58rem/1 ui-monospace,monospace; border:1px solid var(--line); border-b
 .dirs button:hover{background:var(--bg)}
 .sheet footer{display:flex; gap:.4em; flex-wrap:wrap; align-items:center}
 .sheet footer .grow{flex:1}
+.manualrow{display:flex; gap:.4em}
+.manualrow input{flex:1; font-size:.72rem; font-family:ui-monospace,monospace}
 
 /* ── 外觀主題 ──────────────────────────────────────────────────────────
    色票取自 Fable-5.1-100-HTML-Files 的 10 個 demo（隨機抽樣）。
@@ -423,10 +425,15 @@ kbd{font:.58rem/1 ui-monospace,monospace; border:1px solid var(--line); border-b
     <div id="rootlist"></div>
     <div class="crumb" id="crumb"></div>
     <div class="dirs" id="dirs"></div>
+    <div class="manualrow">
+      <input id="manual" placeholder="直接貼路徑，例如 \\wsl.localhost\&lt;發行版&gt;\home\&lt;使用者&gt;\code"
+             spellcheck="false" autocomplete="off">
+      <button id="gomanual">前往</button>
+    </div>
     <footer>
       <button id="addroot">＋ 加入目前資料夾</button>
       <button id="gohome">🏠 家目錄</button>
-      <button id="godrives">💾 磁碟機</button>
+      <button id="godrives">💾 磁碟機 / WSL</button>
       <span class="grow"></span>
       <button id="closefolders">關閉</button>
     </footer>
@@ -773,18 +780,19 @@ async function openFolders() {
 }
 
 async function browseTo(path) {
-  const d = await api("/api/browse?path=" + encodeURIComponent(path || ""));
+  const res = await fetch("/api/browse?path=" + encodeURIComponent(path || ""));
+  if (!res.ok) throw new Error(res.status);
+  const d = await res.json();
   Object.assign(FOLDER, { path: d.path, parent: d.parent, home: d.home });
   $("#crumb").textContent = d.path || "（磁碟機）";
   $("#dirs").innerHTML =
     (d.parent !== null && d.path
       ? `<button data-go="${esc(d.parent)}">⬑ 上一層</button>` : "") +
     (d.dirs.length
-      ? d.dirs.map(name => {
-          const full = d.path ? d.path.replace(/[\\/]$/, "") + "\\" + name : name;
-          return `<button data-go="${esc(full)}">📁 ${esc(name)}</button>`;
-        }).join("")
+      ? d.dirs.map(e =>
+          `<button data-go="${esc(e.path)}">📁 ${esc(e.name)}</button>`).join("")
       : `<p class="empty" style="padding:.4em">（沒有子資料夾）</p>`);
+  $("#manual").value = d.path;
   $("#addroot").disabled = !d.path;
   renderRoots();
 }
@@ -837,6 +845,23 @@ $("#addroot").onclick = () => {
 };
 $("#gohome").onclick = () => browseTo(FOLDER.home);
 $("#godrives").onclick = () => browseTo("");
+
+async function goManual() {
+  const path = $("#manual").value.trim();
+  if (!path) return;
+  try {
+    await browseTo(path);
+  } catch {
+    alert("讀不到這個路徑：" + path +
+          "\n\nWSL 的話確認該發行版正在執行（wsl -l -v），" +
+          "格式是 \\\\wsl.localhost\\<發行版>\\home\\<使用者>\\...");
+  }
+}
+$("#gomanual").onclick = goManual;
+$("#manual").addEventListener("keydown", e => {
+  if (e.key === "Enter") { e.preventDefault(); goManual(); }
+  e.stopPropagation();          // 別讓 Esc/Ctrl+K 的全域處理搶走輸入
+});
 
 /* 外觀主題：只換 CSS 變數，版面規則完全不動 */
 function setSkin(name) {
