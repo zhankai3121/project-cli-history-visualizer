@@ -65,9 +65,12 @@ python indexer.py          # 增量（只讀 jsonl 新增的部分）
 python indexer.py --full   # 砍掉重建
 ```
 
-### 設定專案樹根目錄
+### 設定專案資料夾
 
-用來判斷哪些是「容器目錄」（見下方），預設 `~/Desktop/Claude/Project`。指定自己的：
+標頭的 **📁 資料夾** 會開啟資料夾選擇器：導覽到你放專案的地方 → 「＋加入目前資料夾」。
+可以加多個根目錄，設定存在 DB，重開 server 還在。
+
+`CLIHV_PROJECT_ROOT` 環境變數只作為**首次啟動的預設值**，之後以網頁上的設定為準：
 
 ```bash
 export CLIHV_PROJECT_ROOT="/path/to/your/projects"   # macOS / Linux
@@ -127,18 +130,34 @@ Server 每次提供專案清單時會順手 stat 一次資料夾，所以資料�
 | 回到總覽 | <kbd>Esc</kbd> |
 | 續接某次對話 | session 詳情 → 複製 `claude --resume <id>` |
 | 開專案 | 專案頁 → 在 VS Code 開啟 |
+| 設定專案資料夾 | 標頭 `📁 資料夾` |
 | 字級調整 | 標頭 `A−` / `A+`（12–40px，存 localStorage） |
 | 外觀主題 | 標頭下拉選單，10 種 |
 
 排序：最近活動／停滯最久／紅旗優先／prompt 量
-篩選：有未完成的 Next／30 天內活躍／有紅旗／過程已蒸發／顯示已刪除的專案／顯示容器目錄
+篩選：有未完成的 Next／30 天內活躍／有紅旗／過程已蒸發／顯示已刪除的專案／顯示容器目錄／只看有 CLI 紀錄
 
 ### 專案清單的來源
 
-專案 = **跑過 CLI 的目錄**（來自 `history.jsonl` 的 `project` 欄位與 transcript 每行的 `cwd`），不掃描磁碟上所有資料夾。
+專案來自兩條互補的管道，用 `has_history` / `is_scanned` 分開標記：
+
+1. **跑過 CLI 的目錄** —— `history.jsonl` 的 `project` 欄位與 transcript 每行的 `cwd`。這是**進度資料的唯一來源**。
+2. **資料夾掃描** —— 你設定的根目錄底下的專案資料夾。沒跑過 CLI 的會標 `📂 無 CLI 紀錄`，只是登記存在，沒有進度。
+
+偵測規則：
+
+| 深度 | 認定 |
+|---|---|
+| 根目錄下第 1 層 | 一律算專案 |
+| 第 2 層 | 只認自帶 `.git` / `.claude`，或已經有 CLI 紀錄的 |
+
+第 2 層設限是為了不讓 `src/`、`tests/` 被當成專案。掃描與瀏覽都會跳過 `node_modules`、`.venv`、`dist`、`build` 等常見雜項目錄。
+
+其他行為：
 
 - 資料夾被刪掉 → 自動從網頁消失（**軟刪除**：`exists_on_disk=0`，歷史留著，放回來就復原）
-- **容器目錄**（專案樹根本身與其祖先，例如 `…\Project`、`…\Desktop`）預設隱藏 —— 在這些目錄下直接跑 CLI 會產生看起來像專案的雜訊卡片
+- **容器目錄**（任一根目錄本身與其祖先，例如 `…\Project`、`…\Desktop`）預設隱藏 —— 在這些目錄下直接跑 CLI 會產生看起來像專案的雜訊卡片
+- 想切回「只看跑過 CLI 的」→ 篩選列的 **只看有 CLI 紀錄**
 
 ---
 
@@ -183,8 +202,9 @@ backup/              每次索引順手備份 history.jsonl（.gitignore，含�
 
 ```
 project(real_path UNIQUE, display_name, first_seen, last_seen, session_count,
-        prompt_count, exists_on_disk, has_history, is_git, is_container,
+        prompt_count, exists_on_disk, has_history, is_scanned, is_git, is_container,
         git_branch, git_last_ts, git_last_msg, git_dirty, git_commits, vanished_at)
+app_config(key PK, value)                      -- 目前只存 project_roots
 session(id PK, project_id, started_at, ended_at, prompt_count, title,
         transcript_state)                      -- live | gone
 prompt(session_id, project_id, ts, seq, text, is_slash, source, pasted)
@@ -208,7 +228,9 @@ jsonl 是 append-only，所以 `scan_state` 記錄每個檔案的 `(mtime, size,
 
 | 端點 | 說明 |
 |---|---|
-| `GET /api/overview?include_gone=&include_containers=` | 專案進度卡（會順手對帳資料夾存在與否） |
+| `GET /api/overview?include_gone=&include_containers=&only_history=` | 專案進度卡（會順手掃描資料夾並對帳存在與否） |
+| `GET /api/roots` · `POST /api/roots` | 讀取／整批覆寫要掃描的專案根目錄 |
+| `GET /api/browse?path=` | 列出某目錄的子目錄，給資料夾選擇器用。**只回目錄名稱，不讀任何檔案內容**；`path` 留空時 Windows 回磁碟機清單 |
 | `GET /api/project/{id}` | 專案詳情 + session 列表 |
 | `GET /api/session/{id}` | prompt / turn / 改檔 / 指令 / commit / 進度訊號 |
 | `GET /api/search?q=&limit=` | 全文搜尋（FTS5，短查詢自動退回 LIKE） |

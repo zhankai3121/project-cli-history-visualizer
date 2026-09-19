@@ -37,13 +37,17 @@ BACKUP_DIR = ROOT / "backup"
 
 MEMORY_FILES = ("brain.md", "MEMORY.md")
 
-# 專案樹的根。這個目錄本身、以及它的祖先（家目錄等）都是「容器」而不是專案 ——
-# 在它們底下直接跑 CLI 會產生看起來像專案的雜訊卡片，UI 預設隱藏。
-# 注意只標「根與其祖先」，不標任何有子目錄的專案：一個專案底下可能還有子專案，
-# 但它自己也有大量 prompt，仍是真專案。
-# 用環境變數 CLIHV_PROJECT_ROOT 指定自己的專案樹根。
-PROJECT_ROOT = Path(os.environ.get("CLIHV_PROJECT_ROOT")
+# 專案樹的根（可多個，存在 app_config，網頁可以改）。
+# 根目錄本身與它的祖先都是「容器」而不是專案 —— 在那些目錄下直接跑 CLI 會產生
+# 看起來像專案的雜訊卡片，UI 預設隱藏。
+# 首次啟動的預設值：CLIHV_PROJECT_ROOT 環境變數，否則 ~/Desktop/Claude/Project。
+DEFAULT_ROOT = Path(os.environ.get("CLIHV_PROJECT_ROOT")
                     or Path.home() / "Desktop" / "Claude" / "Project")
+
+# 掃描專案資料夾時要跳過的目錄名
+SKIP_DIRS = {"node_modules", ".venv", "venv", "env", "__pycache__", "vendor",
+             "dist", "build", "target", "out", "bin", "obj", "runtime",
+             "site-packages", "backup", ".git", ".idea", ".vscode"}
 
 
 # ── 小工具 ────────────────────────────────────────────────────────────────
@@ -89,6 +93,7 @@ def migrate(con):
             ("git_last_msg", "TEXT"), ("git_dirty", "INTEGER"),
             ("git_commits", "INTEGER"),
             ("is_container", "INTEGER NOT NULL DEFAULT 0"),
+            ("is_scanned", "INTEGER NOT NULL DEFAULT 0"),
         ],
         "progress_signal": [("state", "TEXT")],
     }
@@ -379,11 +384,90 @@ def index_memory_files(con, resolver):
 # 這裡不做資料夾探索 —— 沒跑過 CLI 的資料夾不是專案，不該混進來。
 # 這一段只回答一個問題：資料庫裡這些專案，資料夾還在不在。
 
-def is_container(real_path):
-    """專案根本身，或它的祖先目錄（Desktop\\Claude、家目錄）→ 容器，不是專案。"""
+def get_roots(con):
+    """目前設定的專案根目錄清單。第一次讀取時寫入預設值。"""
+    row = con.execute("SELECT value FROM app_config WHERE key = 'project_roots'").fetchone()
+    if row:
+        try:
+            roots = json.loads(row["value"])
+            if isinstance(roots, list):
+                return [str(r) for r in roots if r]
+        except ValueError:
+            pass
+    set_roots(con, [str(DEFAULT_ROOT)])
+    return [str(DEFAULT_ROOT)]
+
+
+def set_roots(con, roots):
+    clean, seen = [], set()
+    for r in roots:
+        r = str(r).rstrip("\\/") or str(r)
+        if r.lower() not in seen:
+            seen.add(r.lower())
+            clean.append(r)
+    con.execute(
+        "INSERT INTO app_config(key, value) VALUES ('project_roots', ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (json.dumps(clean, ensure_ascii=False),))
+    return clean
+
+
+def is_container(real_path, roots):
+    """任何一個根目錄本身，或它的祖先目錄 → 容器，不是專案。"""
     here = str(real_path).rstrip("\\/").lower()
-    root = str(PROJECT_ROOT).rstrip("\\/").lower()
-    return here == root or root.startswith(here + "\\")
+    for root in roots:
+        r = str(root).rstrip("\\/").lower()
+        if here == r or r.startswith(here + "\\") or r.startswith(here + "/"):
+            return True
+    return False
+
+
+# ── 管線 F：掃描指定資料夾，把裡面的子資料夾當專案 ────────────────────────
+#
+# 深度 1 的子資料夾一律算專案；深度 2 只認「自帶 .git / .claude」或「已經有
+# CLI 紀錄」的 —— 否則 src/ tests/ 這種會被誤認成專案。
+
+def _is_project_dir(path):
+    return (path.is_dir()
+            and not path.name.startswith(".")
+            and path.name.lower() not in SKIP_DIRS)
+
+
+def scan_project_dirs(con, resolver):
+    """掃描設定的根目錄，把找到的專案資料夾登記進 project 表。回傳新增數。"""
+    known = {r["real_path"].lower()
+             for r in con.execute("SELECT real_path FROM project")}
+    found, added = [], 0
+
+    for root in get_roots(con):
+        base = Path(root)
+        if not base.is_dir():
+            continue
+        try:
+            children = sorted(base.iterdir())
+        except OSError:
+            continue
+        for child in children:
+            if not _is_project_dir(child):
+                continue
+            found.append(child)
+            try:
+                grandchildren = sorted(child.iterdir())
+            except OSError:
+                continue
+            for grand in grandchildren:
+                if not _is_project_dir(grand):
+                    continue
+                if ((grand / ".git").exists() or (grand / ".claude").exists()
+                        or str(grand).lower() in known):
+                    found.append(grand)
+
+    for path in found:
+        if str(path).lower() not in known:
+            added += 1
+        pid = resolver.project(str(path))
+        con.execute("UPDATE project SET is_scanned = 1 WHERE id = ?", (pid,))
+    return added
 
 
 def sync_disk_projects(con):
@@ -396,11 +480,12 @@ def sync_disk_projects(con):
     before = {r["real_path"] for r in
               con.execute("SELECT real_path FROM project WHERE exists_on_disk = 1")}
 
+    roots = get_roots(con)
     appeared = 0
     for row in con.execute("SELECT id, real_path FROM project").fetchall():
         path = Path(row["real_path"])
         con.execute("UPDATE project SET is_container = ? WHERE id = ?",
-                    (int(is_container(row["real_path"])), row["id"]))
+                    (int(is_container(row["real_path"], roots)), row["id"]))
         alive = path.is_dir()
         if alive:
             if row["real_path"] not in before:
@@ -498,6 +583,7 @@ def run(full=False):
     con.commit()
 
     memories = index_memory_files(con, resolver)
+    scanned = scan_project_dirs(con, resolver)
     appeared, vanished = sync_disk_projects(con)
     repos = collect_git(con)
     rollup(con)
@@ -512,15 +598,16 @@ def run(full=False):
 
     print(f"索引完成 {time.time() - started:.2f}s  "
           f"(+{prompts} prompts, +{turns} turns, +{memories} memory 檔, "
-          f"專案 +{appeared} / -{vanished}, git repo {repos})")
+          f"專案 +{appeared} / -{vanished}, 掃描新增 {scanned}, git repo {repos})")
     print("  " + " · ".join(f"{k} {v}" for k, v in stats.items()))
     return stats
 
 
 def sync_only(con):
-    """server 每次要專案清單時呼叫：只 stat 資料夾，不重解析 jsonl。"""
+    """server 每次要專案清單時呼叫：掃資料夾 + stat，不重解析 jsonl。"""
+    scanned = scan_project_dirs(con, Resolver(con))
     appeared, vanished = sync_disk_projects(con)
-    if appeared or vanished:
+    if scanned or appeared or vanished:
         rollup(con)
     con.commit()
     return appeared, vanished

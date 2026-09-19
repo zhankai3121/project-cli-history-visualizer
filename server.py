@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
 import webbrowser
 from pathlib import Path
@@ -76,7 +77,8 @@ def index():
 
 
 @app.get("/api/overview")
-def overview(include_gone: bool = False, include_containers: bool = False):
+def overview(include_gone: bool = False, include_containers: bool = False,
+             only_history: bool = False):
     con = db()
     appeared, vanished = indexer.sync_only(con)
 
@@ -85,12 +87,15 @@ def overview(include_gone: bool = False, include_containers: bool = False):
         clauses.append("p.exists_on_disk = 1")
     if not include_containers:
         clauses.append("p.is_container = 0")
+    if only_history:
+        clauses.append("p.has_history = 1")
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
     projects = rows(con.execute(f"""
         SELECT p.id, p.real_path, p.display_name, p.last_seen, p.first_seen,
                p.session_count, p.prompt_count, p.exists_on_disk, p.is_git,
                p.vanished_at, p.git_branch, p.git_last_ts, p.git_last_msg,
-               p.git_dirty, p.git_commits, p.is_container,
+               p.git_dirty, p.git_commits, p.is_container, p.is_scanned,
+               p.has_history,
                (SELECT COUNT(*) FROM commit_ref c WHERE c.project_id = p.id) AS commits,
                (SELECT COUNT(DISTINCT path) FROM file_touch f WHERE f.project_id = p.id) AS files,
                (SELECT COUNT(*) FROM session s
@@ -239,6 +244,68 @@ def search(q: str = Query(..., min_length=1), limit: int = 80):
 
     con.close()
     return {"mode": mode, "query": term, "count": len(hits), "hits": hits}
+
+
+@app.get("/api/roots")
+def get_roots():
+    con = db()
+    roots = indexer.get_roots(con)
+    con.commit()
+    out = [{"path": r, "exists": Path(r).is_dir()} for r in roots]
+    con.close()
+    return {"roots": out}
+
+
+@app.post("/api/roots")
+def set_roots(payload: dict):
+    """整批覆寫根目錄清單。只接受真的存在的目錄。"""
+    wanted = payload.get("roots")
+    if not isinstance(wanted, list):
+        raise HTTPException(400, "roots must be a list")
+    bad = [r for r in wanted if not Path(str(r)).is_dir()]
+    if bad:
+        raise HTTPException(400, f"不是資料夾: {bad[0]}")
+    con = db()
+    roots = indexer.set_roots(con, wanted)
+    indexer.scan_project_dirs(con, indexer.Resolver(con))
+    indexer.sync_disk_projects(con)
+    indexer.collect_git(con)
+    indexer.rollup(con)
+    con.commit()
+    con.close()
+    return {"roots": roots}
+
+
+@app.get("/api/browse")
+def browse(path: str = ""):
+    """列出某個目錄底下的子目錄，給前端的資料夾選擇器用。
+
+    只回目錄名稱，不讀任何檔案內容。path 留空時：Windows 回磁碟機清單，
+    其他系統回根目錄。
+    """
+    if not path:
+        if os.name == "nt":
+            drives = [f"{c}:\\" for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                      if Path(f"{c}:\\").exists()]
+            return {"path": "", "parent": None, "dirs": drives,
+                    "home": str(Path.home())}
+        path = "/"
+
+    here = Path(path)
+    if not here.is_dir():
+        raise HTTPException(404, "不是資料夾")
+    try:
+        dirs = sorted(
+            (p.name for p in here.iterdir()
+             if p.is_dir() and not p.name.startswith(".")
+             and p.name.lower() not in indexer.SKIP_DIRS),
+            key=str.lower)
+    except OSError as exc:
+        raise HTTPException(403, f"讀不到: {exc}")
+
+    parent = str(here.parent) if here.parent != here else ""
+    return {"path": str(here), "parent": parent, "dirs": dirs,
+            "home": str(Path.home())}
 
 
 @app.get("/api/recent")

@@ -26,7 +26,15 @@ CREATE TABLE IF NOT EXISTS project (
     git_dirty      INTEGER,
     git_commits    INTEGER,
     -- 容器目錄（專案根本身與其祖先），不是專案。UI 預設隱藏
-    is_container   INTEGER NOT NULL DEFAULT 0
+    is_container   INTEGER NOT NULL DEFAULT 0,
+    -- 由資料夾掃描發現（可能從未跑過 CLI）
+    is_scanned     INTEGER NOT NULL DEFAULT 0
+);
+
+-- 設定（目前只存 project_roots）
+CREATE TABLE IF NOT EXISTS app_config (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS session (

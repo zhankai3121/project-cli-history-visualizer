@@ -159,6 +159,31 @@ mark{background:var(--accent); color:var(--on-accent); border-radius:3px; paddin
 kbd{font:.58rem/1 ui-monospace,monospace; border:1px solid var(--line); border-bottom-width:2px;
     border-radius:4px; padding:.1em .3em; color:var(--dim)}
 
+/* 資料夾選擇器 */
+.modal{position:fixed; inset:0; z-index:1000; display:grid; place-items:center;
+       background:rgba(0,0,0,.55); padding:1em}
+.modal[hidden]{display:none}
+.sheet{background:var(--panel); border:var(--border-w) solid var(--line);
+       border-radius:var(--radius); box-shadow:var(--shadow), var(--card-inset);
+       width:min(46rem,94vw); max-height:88vh; display:flex; flex-direction:column;
+       padding:.9em; gap:.5em}
+.sheet h2{margin:0; font-size:.95rem; text-transform:var(--title-transform);
+          letter-spacing:var(--title-spacing)}
+.rootrow{display:flex; gap:.4em; align-items:center; font-size:.72rem;
+         border:1px solid var(--line); border-radius:var(--radius); padding:.3em .5em}
+.rootrow code{flex:1; word-break:break-all; font-family:ui-monospace,monospace}
+.rootrow.missing code{color:var(--flag); text-decoration:line-through}
+.rootrow button{padding:.15em .5em; font-size:.7rem}
+.crumb{font-size:.7rem; color:var(--dim); word-break:break-all;
+       font-family:ui-monospace,monospace}
+.dirs{flex:1; min-height:8em; overflow:auto; display:flex; flex-direction:column;
+      gap:.1em; border:1px solid var(--line); border-radius:var(--radius); padding:.3em}
+.dirs button{width:100%; text-align:left; border:0; background:none; padding:.3em .55em;
+             font-size:.78rem; border-radius:.3em; color:inherit}
+.dirs button:hover{background:var(--bg)}
+.sheet footer{display:flex; gap:.4em; flex-wrap:wrap; align-items:center}
+.sheet footer .grow{flex:1}
+
 /* ── 外觀主題 ──────────────────────────────────────────────────────────
    色票取自 Fable-5.1-100-HTML-Files 的 10 個 demo（隨機抽樣）。
    只重新定義變數，不動任何版面規則。必須排在 data-theme 區塊之後 ——
@@ -344,6 +369,7 @@ kbd{font:.58rem/1 ui-monospace,monospace; border:1px solid var(--line); border-b
     <option value="flags">紅旗優先</option>
     <option value="volume">prompt 量</option>
   </select>
+  <button id="folders" title="設定要掃描的專案資料夾">📁 資料夾</button>
   <select id="skin" title="外觀主題">
     <option value="">預設</option>
     <option value="metal">石墨金屬</option>
@@ -372,6 +398,7 @@ kbd{font:.58rem/1 ui-monospace,monospace; border:1px solid var(--line); border-b
       <button class="chip" data-f="evap" aria-pressed="false">過程已蒸發</button>
       <button class="chip" data-f="gone" aria-pressed="false">顯示已刪除的專案</button>
       <button class="chip" data-f="container" aria-pressed="false">顯示容器目錄</button>
+      <button class="chip" data-f="onlyhist" aria-pressed="false">只看有 CLI 紀錄</button>
       <button class="chip" id="feed">最近動態 →</button>
     </div>
     <div class="grid" id="grid"></div>
@@ -384,6 +411,27 @@ kbd{font:.58rem/1 ui-monospace,monospace; border:1px solid var(--line); border-b
   <section id="detail" hidden></section>
   <section id="results" hidden></section>
 </main>
+
+<div class="modal" id="foldermodal" hidden>
+  <div class="sheet">
+    <h2>專案資料夾</h2>
+    <p class="note" style="margin:0">
+      這些資料夾底下的子資料夾會被當成專案。深度 2 只認自帶
+      <code>.git</code> / <code>.claude</code> 或已有 CLI 紀錄的，避免
+      <code>src/</code> 被誤認。
+    </p>
+    <div id="rootlist"></div>
+    <div class="crumb" id="crumb"></div>
+    <div class="dirs" id="dirs"></div>
+    <footer>
+      <button id="addroot">＋ 加入目前資料夾</button>
+      <button id="gohome">🏠 家目錄</button>
+      <button id="godrives">💾 磁碟機</button>
+      <span class="grow"></span>
+      <button id="closefolders">關閉</button>
+    </footer>
+  </div>
+</div>
 
 <script>
 const $ = s => document.querySelector(s);
@@ -451,6 +499,7 @@ async function loadOverview() {
   const params = new URLSearchParams({
     include_gone: STATE.filters.has("gone"),
     include_containers: STATE.filters.has("container"),
+    only_history: STATE.filters.has("onlyhist"),
   });
   const data = await api("/api/overview?" + params);
   STATE.projects = data.projects;
@@ -503,7 +552,7 @@ function card(p) {
 
   return `<article class="${cls.join(" ")}" data-id="${p.id}">
     <h2><span><i class="dot ${p.light || "none"}" title="${LIGHT[p.light] || "非 git repo"}"></i>${esc(p.display_name)}</span>
-        <em>${p.is_container ? "📁 容器 · " : ""}${p.exists_on_disk ? "" : "🗑 已刪除 · "}${ago(p.last_seen)}</em></h2>
+        <em>${p.is_container ? "📁 容器 · " : ""}${p.has_history ? "" : "📂 無 CLI 紀錄 · "}${p.exists_on_disk ? "" : "🗑 已刪除 · "}${ago(p.last_seen)}</em></h2>
     ${body ? `<div class="rows">${body}</div>`
            : `<p class="empty">尚無可抽取的進度訊號</p>`}
     <div class="meta">
@@ -700,7 +749,7 @@ document.querySelectorAll(".chip").forEach(chip => {
     const on = chip.getAttribute("aria-pressed") === "true";
     chip.setAttribute("aria-pressed", String(!on));
     on ? STATE.filters.delete(key) : STATE.filters.add(key);
-    (key === "gone" || key === "container") ? loadOverview() : renderGrid();
+    ["gone", "container", "onlyhist"].includes(key) ? loadOverview() : renderGrid();
   };
 });
 
@@ -712,6 +761,82 @@ $("#reindex").onclick = async () => {
   await Promise.all([loadOverview(), loadHeat()]);
   $("#reindex").textContent = "↻";
 };
+
+/* ── 資料夾選擇器 ─────────────────────────────────────────────── */
+const FOLDER = { path: "", parent: null, home: "", roots: [] };
+
+async function openFolders() {
+  FOLDER.roots = (await api("/api/roots")).roots;
+  const start = FOLDER.roots.find(r => r.exists)?.path || "";
+  await browseTo(start);
+  $("#foldermodal").hidden = false;
+}
+
+async function browseTo(path) {
+  const d = await api("/api/browse?path=" + encodeURIComponent(path || ""));
+  Object.assign(FOLDER, { path: d.path, parent: d.parent, home: d.home });
+  $("#crumb").textContent = d.path || "（磁碟機）";
+  $("#dirs").innerHTML =
+    (d.parent !== null && d.path
+      ? `<button data-go="${esc(d.parent)}">⬑ 上一層</button>` : "") +
+    (d.dirs.length
+      ? d.dirs.map(name => {
+          const full = d.path ? d.path.replace(/[\\/]$/, "") + "\\" + name : name;
+          return `<button data-go="${esc(full)}">📁 ${esc(name)}</button>`;
+        }).join("")
+      : `<p class="empty" style="padding:.4em">（沒有子資料夾）</p>`);
+  $("#addroot").disabled = !d.path;
+  renderRoots();
+}
+
+function renderRoots() {
+  $("#rootlist").innerHTML = FOLDER.roots.length
+    ? FOLDER.roots.map(r => `
+        <div class="rootrow${r.exists ? "" : " missing"}">
+          <code>${esc(r.path)}</code>
+          ${r.exists ? "" : '<span class="flag">找不到</span>'}
+          <button data-open="${esc(r.path)}">前往</button>
+          <button data-del="${esc(r.path)}">✕</button>
+        </div>`).join("")
+    : `<p class="empty">還沒設定任何資料夾 —— 沒有資料夾掃描，專案清單只會有跑過 CLI 的。</p>`;
+}
+
+async function saveRoots(paths) {
+  const res = await fetch("/api/roots", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ roots: paths }),
+  });
+  if (!res.ok) {
+    alert("存檔失敗：" + ((await res.json()).detail || res.status));
+    return;
+  }
+  FOLDER.roots = (await api("/api/roots")).roots;
+  renderRoots();
+  await Promise.all([loadOverview(), loadHeat()]);
+}
+
+$("#folders").onclick = openFolders;
+$("#closefolders").onclick = () => { $("#foldermodal").hidden = true; };
+$("#foldermodal").onclick = e => {
+  if (e.target === $("#foldermodal")) $("#foldermodal").hidden = true;
+};
+$("#dirs").onclick = e => {
+  const go = e.target.closest("[data-go]");
+  if (go) browseTo(go.dataset.go);
+};
+$("#rootlist").onclick = e => {
+  const open = e.target.closest("[data-open]");
+  if (open) { browseTo(open.dataset.open); return; }
+  const del = e.target.closest("[data-del]");
+  if (del) saveRoots(FOLDER.roots.map(r => r.path).filter(p => p !== del.dataset.del));
+};
+$("#addroot").onclick = () => {
+  if (!FOLDER.path) return;
+  saveRoots([...FOLDER.roots.map(r => r.path), FOLDER.path]);
+};
+$("#gohome").onclick = () => browseTo(FOLDER.home);
+$("#godrives").onclick = () => browseTo("");
 
 /* 外觀主題：只換 CSS 變數，版面規則完全不動 */
 function setSkin(name) {
@@ -754,6 +879,7 @@ document.addEventListener("keydown", e => {
     $("#q").focus();
     $("#q").select();
   } else if (e.key === "Escape") {
+    if (!$("#foldermodal").hidden) { $("#foldermodal").hidden = true; return; }
     $("#q").value = "";
     show("overview");
   }
