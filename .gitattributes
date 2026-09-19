@@ -1,0 +1,8 @@
+# repo 內一律 LF，簽出也用 LF —— 避免 Windows 上每次 commit 跳 CRLF 警告
+* text=auto eol=lf
+
+# 二進位
+*.db binary
+*.png binary
+*.jpg binary
+*.ico binary
