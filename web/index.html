@@ -454,6 +454,15 @@ const LIGHT = {
   grey:   "灰燈：談過但 commit 沒跟上",
 };
 
+/* 沒有燈的時候要說清楚為什麼，不要一律當成「非 git repo」 */
+function lightTitle(p) {
+  if (p.light) return LIGHT[p.light];
+  if (!p.is_git) return "非 git repo，無從判斷";
+  if (!p.git_last_ts) return "讀不到 git 狀態（權限或路徑問題）";
+  if (!p.has_history) return "沒有 CLI 紀錄可對照";
+  return "無從判斷";
+}
+
 function gitLine(p) {
   if (!p.is_git) return "";
   const bits = [`⎇ ${esc(p.git_branch || "?")}`, `${p.git_commits ?? "?"} commits`];
@@ -558,7 +567,7 @@ function card(p) {
   ].filter(Boolean).join(" · ");
 
   return `<article class="${cls.join(" ")}" data-id="${p.id}">
-    <h2><span><i class="dot ${p.light || "none"}" title="${LIGHT[p.light] || "非 git repo"}"></i>${esc(p.display_name)}</span>
+    <h2><span><i class="dot ${p.light || "none"}" title="${esc(lightTitle(p))}"></i>${esc(p.display_name)}</span>
         <em>${p.is_container ? "📁 容器 · " : ""}${p.has_history ? "" : "📂 無 CLI 紀錄 · "}${p.exists_on_disk ? "" : "🗑 已刪除 · "}${ago(p.last_seen)}</em></h2>
     ${body ? `<div class="rows">${body}</div>`
            : `<p class="empty">尚無可抽取的進度訊號</p>`}
@@ -580,7 +589,7 @@ async function openProject(id, focusSession) {
   $("#detail").innerHTML = `
     <button class="back">← 回總覽</button>
     <h2 style="margin:0 0 4px">
-      <i class="dot ${project.light || "none"}" title="${LIGHT[project.light] || "非 git repo"}"></i>${esc(project.display_name)}</h2>
+      <i class="dot ${project.light || "none"}" title="${esc(lightTitle(project))}"></i>${esc(project.display_name)}</h2>
     <p class="note">${esc(project.real_path)}${project.exists_on_disk ? "" : " · 🗑 資料夾已不存在"}</p>
     <div class="actions">
       <button data-act="code">在 VS Code 開啟</button>

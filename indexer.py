@@ -542,10 +542,18 @@ def sync_disk_projects(con):
 # transcript 裡只抓得到 2 筆 git commit（大多數 commit 不是透過 Bash 工具下的），
 # 所以「有沒有真的落地」要直接問 repo 本身，不能只信對話紀錄。
 
-def _git(path, *args, timeout=10):
+def _git(path, *args, timeout=25):
+    """跑一個唯讀 git 指令。失敗一律回 None，絕不拋例外。
+
+    `-c safe.directory=<path>`：WSL / 網路磁碟機上的 repo 擁有者 UID 與
+    Windows 帳號不同，git 會擋下來說 "detected dubious ownership"。這裡
+    只對使用者自己登記的那個目錄放行，不用 `*`，也不動使用者的 git config。
+    UNC 上 `status --porcelain` 實測要 2 秒出頭，所以 timeout 放寬。
+    """
     try:
         done = subprocess.run(
-            ["git", "-C", str(path), *args], capture_output=True, text=True,
+            ["git", "-c", f"safe.directory={path}", "-C", str(path), *args],
+            capture_output=True, text=True,
             encoding="utf-8", errors="replace", timeout=timeout)
     except (OSError, subprocess.SubprocessError):
         return None

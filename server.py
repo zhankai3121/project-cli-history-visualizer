@@ -51,16 +51,21 @@ def traffic_light(proj):
     green  最後一次 commit 在最後一則 prompt 之後 -> 已落實
     yellow 工作區有未提交的變更 -> 正在產出中
     grey   談過但 commit 沒跟上
-    None   不是 git repo，無從判斷
+    None   無從判斷：不是 git repo、git 讀不到、或根本沒有 CLI 紀錄可對照
+
+    最後那個 None 很重要：以前 git 讀失敗會掉進 grey，等於把「不知道」
+    報成「沒跟上」。WSL 上的 repo 因為 safe.directory 讀不到時就踩到這個。
     """
     if not proj.get("is_git"):
+        return None
+    if proj.get("git_last_ts") is None:      # git 指令失敗 -> 不知道，不是沒跟上
         return None
     if proj.get("git_dirty"):
         return "yellow"
     last_commit, last_prompt = proj.get("git_last_ts"), proj.get("last_seen")
-    if last_commit and last_prompt and last_commit >= last_prompt:
-        return "green"
-    return "grey"
+    if not last_prompt:                      # 沒有 prompt 可對照
+        return None
+    return "green" if last_commit >= last_prompt else "grey"
 
 
 def first_para(text, limit=220):
