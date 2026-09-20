@@ -229,3 +229,21 @@ def test_壞掉的行不會讓整個檔案掛掉(tmp_path):
     path = tmp_path / "t.jsonl"
     path.write_text('{"a":1}\n\n{"b":2}\n', encoding="utf-8")
     assert [rec for _, rec in P.iter_jsonl(path)] == [{"a": 1}, {"b": 2}]
+
+
+# ── 手寫進度檔提到的路徑 ──────────────────────────────────────────────────
+
+def test_memory_paths_抽反引號與副檔名():
+    assert P.memory_paths("看 `server.py` 與 docs/plan.md，還有 foo") == \
+        {"server.py", "docs/plan.md"}
+    # 反斜線與大小寫都要正規化掉，不然結尾比對對不上 file_touch 裡的路徑
+    assert P.memory_paths(r"改 `web\Index.HTML` 和 .\schema.sql") == \
+        {"web/index.html", "schema.sql"}
+
+
+def test_memory_paths_忽略沒有副檔名的字():
+    """沒有副檔名的字一律不算 —— 不然中文進度檔會整篇變成候選路徑。"""
+    assert P.memory_paths("重構 `parser` 模組，順便處理 indexer 這一塊") == set()
+    assert P.memory_paths("") == set()
+    # 指令裡的路徑要抽得出來，但整句指令本身不能變成候選
+    assert P.memory_paths("`pytest tests/test_api.py -q`") == {"tests/test_api.py"}

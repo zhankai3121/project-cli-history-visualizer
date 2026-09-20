@@ -347,3 +347,93 @@ def test_timeline_依時間遞增且排除_last_prompt(client):
                           "goal", "state", "next_step"}
 
     assert client.get("/api/project/999999/timeline").status_code == 404
+
+
+# ── F4 手寫 vs 自動 不一致 ────────────────────────────────────────────────
+#
+# 基準時間是「專案最後一筆 file_touch 的日期」，不是系統時鐘 —— 所以測試
+# 要把專案的時鐘往前推（補一筆比較新的 touch），而不是去改 fixture 的日期。
+
+def alpha_proj(client):
+    ps = client.get("/api/overview?include_containers=true").json()["projects"]
+    return next(p for p in ps if p["real_path"].endswith("alpha"))
+
+
+def advance_clock(pid, real_path, ts="2026-10-25T09:00:00.000Z"):
+    """替 alpha 補一筆新的 file_touch：專案往前走了，但 config.py 停在 09-01。"""
+    import sqlite3
+
+    con = sqlite3.connect(indexer.DB_PATH)
+    con.execute("INSERT INTO file_touch(session_id, project_id, ts, path, verb) "
+                "VALUES ('sess-1', ?, ?, ?, 'Edit')",
+                (pid, ts, real_path + "/app.py"))
+    con.commit()
+    con.close()
+
+
+def test_mismatch_提到的檔案沒動過(client):
+    """brain.md 還在講 config.py，實作卻 54 天沒碰它 —— 這就是要報的那一格。"""
+    p = alpha_proj(client)
+    advance_clock(p["id"], p["real_path"])
+
+    flag = alpha_proj(client)["mismatch"]
+    assert flag and flag["kind"] == "mentioned_untouched"
+    assert any(f.replace("\\", "/").endswith("/config.py") for f in flag["files"])
+    assert "config.py" in flag["detail"] and "brain.md" in flag["detail"]
+    assert flag["memory_ts"].startswith("2026-08-25")
+
+    detail = client.get(f"/api/project/{p['id']}").json()["project"]
+    assert detail["mismatch"]["kind"] == "mentioned_untouched", "專案頁沒有同一個旗標"
+
+
+def test_mismatch_不存在的路徑不算(client):
+    """`~/.claude/plans/…` 不是這個專案的檔案，提到它不能算「寫了沒做」。"""
+    import sqlite3
+
+    p = alpha_proj(client)
+    advance_clock(p["id"], p["real_path"])      # 時鐘照推，擋掉的只能是路徑規則
+    con = sqlite3.connect(indexer.DB_PATH)
+    con.execute("UPDATE progress_signal SET body = ? "
+                "WHERE project_id = ? AND kind = 'memory_file'",
+                ("## Focus\n照 `~/.claude/plans/大計畫.md` 與 docs/never.py 做\n"
+                 "\n## Next (when resuming)\n繼續\n", p["id"]))
+    con.commit()
+    con.close()
+
+    # 候選全被濾掉 -> 規則一不報；規則二要 ≥10 筆 touch，這裡只有 3 筆 -> 也不報
+    assert alpha_proj(client)["mismatch"] is None
+
+
+def test_mismatch_手寫落後實作(client):
+    """另一條規則：進度檔整份過期。落後 14 天以上、期間又改了 ≥10 次檔才算。"""
+    import sqlite3
+
+    p = alpha_proj(client)
+    con = sqlite3.connect(indexer.DB_PATH)
+    # body 不提任何專案檔 -> 規則一不成立，才測得到規則二
+    con.execute("UPDATE progress_signal SET body = ? "
+                "WHERE project_id = ? AND kind = 'memory_file'",
+                ("## Focus\n把架構想清楚\n\n## Next (when resuming)\n繼續\n", p["id"]))
+    for i in range(10):
+        con.execute("INSERT INTO file_touch(session_id, project_id, ts, path, verb) "
+                    "VALUES ('sess-1', ?, ?, ?, 'Edit')",
+                    (p["id"], f"2026-10-25T09:0{i}:00.000Z", p["real_path"] + "/app.py"))
+    con.commit()
+    con.close()
+
+    flag = alpha_proj(client)["mismatch"]
+    assert flag and flag["kind"] == "stale_memory"
+    assert "61 天" in flag["detail"] and "11 次" in flag["detail"], flag["detail"]
+    assert flag["files"] == [], "整份過期時沒有特定檔案可指"
+
+
+def test_memory_跟上就沒有旗標(client):
+    """brain.md 講的就是最近在改的檔，時間也沒落後 —— 一個旗標都不該有。"""
+    ps = client.get("/api/overview?include_containers=true").json()["projects"]
+    assert all("mismatch" in p for p in ps), "overview 少了 mismatch 欄"
+    assert all(p["mismatch"] is None for p in ps), \
+        [p["mismatch"] for p in ps if p["mismatch"]]
+
+    # 根本沒有 memory 檔的專案也是 null，不是「查不到就報」
+    beta = next(p for p in ps if p["real_path"].endswith("beta"))
+    assert beta["mismatch"] is None

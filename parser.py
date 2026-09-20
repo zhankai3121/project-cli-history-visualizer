@@ -273,3 +273,37 @@ def parse_memory_markdown(text):
     goal = pick(("focus", "目標", "current"))
     nxt = pick(("next", "下一步", "todo"))
     return goal, nxt
+
+
+_PATH_EXT = "py|js|ts|tsx|html|css|md|sql|json|toml|yaml|yml|sh|ps1"
+_PATH_TOKEN = re.compile(rf"[\w\-./\\~]+\.(?:{_PATH_EXT})\b", re.I)
+_BACKTICK = re.compile(r"`([^`\n]+)`")
+_ENDS_EXT = re.compile(rf"\.(?:{_PATH_EXT})$", re.I)
+
+
+def memory_paths(text):
+    """手寫進度檔的內文 -> 裡面提到的檔案路徑候選（set，已正規化）。
+
+    兩個來源：反引號包起來的整段（路徑帶空白時只有這裡抓得到），以及整篇文字
+    掃一次副檔名。兩者都必須以已知副檔名結尾 —— 沒有副檔名的字（`foo`、
+    「重構」）一律不算，不然中文進度檔會整篇變成候選。
+
+    正規化：`\\` -> `/`、轉小寫、去掉開頭的 `./`。只做到這裡；要不要算成
+    「這個專案的檔案」是 server.mismatch() 拿 file_touch 歷史決定的，
+    這裡不知道專案根目錄，也不該知道。
+    """
+    if not text:
+        return set()
+
+    def norm(raw):
+        raw = raw.strip().replace("\\", "/").lower()
+        return raw[2:] if raw.startswith("./") else raw
+
+    out = set()
+    for span in _BACKTICK.findall(text):
+        span = span.strip()
+        if _ENDS_EXT.search(span):
+            out.add(norm(span))
+    for hit in _PATH_TOKEN.finditer(text):
+        out.add(norm(hit.group(0)))
+    return {p for p in out if p}

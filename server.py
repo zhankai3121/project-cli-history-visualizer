@@ -166,6 +166,8 @@ def overview(include_gone: bool = False, include_containers: bool = False,
             GROUP BY path HAVING n >= 3 ORDER BY n DESC LIMIT 3
         """, (pid,)))
 
+        proj["mismatch"] = mismatch(con, pid, proj["real_path"])
+
     con.close()
     return {"projects": projects, "appeared": appeared, "vanished": vanished}
 
@@ -185,9 +187,11 @@ def project_detail(project_id: int):
         FROM session s WHERE s.project_id = ?
         ORDER BY COALESCE(s.started_at, '') DESC
     """, (project_id,)))
+    flag = mismatch(con, project_id, proj["real_path"])
     con.close()
     detail = dict(proj)
     detail["light"] = traffic_light(detail)
+    detail["mismatch"] = flag
     return {"project": detail, "sessions": sessions}
 
 
@@ -691,6 +695,102 @@ def project_timeline(project_id: int, limit: int = Query(200, ge=1, le=1000)):
 
 
 # @F4-api
+
+import parser as P
+
+MISMATCH_COLD_DAYS = 30       # 進度檔提到的檔案，幾天沒被碰就算「寫了沒做」
+MISMATCH_STALE_DAYS = 14      # 進度檔比實作落後幾天算沒跟上
+MISMATCH_STALE_TOUCHES = 10   # 落後期間至少改幾次檔，才不是「整個專案都停著」
+
+
+def _iso_day(ts):
+    """UTC ISO 字串 -> date。只取前 10 碼。
+
+    memory 的 ts 是 mtime 轉出來的 `…+00:00`，transcript 的是 `…Z`，兩種都是
+    UTC，但尾巴不同 —— 直接比字串只有日期部分靠得住，那也正好是這裡要的粒度。
+    """
+    try:
+        return dt.date.fromisoformat(str(ts)[:10])
+    except (TypeError, ValueError):
+        return None
+
+
+def _touch_matches(touch_path, candidate):
+    """file_touch 的完整路徑是不是就是進度檔寫的那個候選。
+
+    手寫進度檔幾乎不寫絕對路徑（本機樣本：`診所POS/docs/系統規劃.md`），
+    所以一律用結尾比對，並且要對在分隔線上 —— 不然 `config.py` 會吃到
+    `myconfig.py`。
+    """
+    norm = touch_path.replace("\\", "/").lower()
+    return norm == candidate or norm.endswith("/" + candidate)
+
+
+def mismatch(con, project_id, real_path=None, now=None):
+    """手寫的進度檔與實際改檔歷史對不上 -> 旗標，對得上 -> None。
+
+    回 `{"kind", "detail", "files", "memory_ts"}`，kind 是
+    `mentioned_untouched`（寫進進度檔的檔案被丟在後面）或
+    `stale_memory`（進度檔整份過期）。兩個都成立時報前者：它點得出檔名，
+    比「你的 brain.md 舊了」可行動得多。
+
+    基準時間 `now`：沒給的話用「這個專案最後一次 file_touch 的日期」，不是系統
+    時鐘。用系統時鐘的話，一個停擺一年的專案會把進度檔裡每個檔案都標紅，那講的
+    是「沒人動這個專案」不是「手寫與實作不符」；用專案自己的時鐘，旗標的意思才
+    會是「實作一直在前進，但這個檔案被留在原地」。測試也才不會隨著日子變紅。
+    """
+    sig = con.execute("""
+        SELECT ts, goal, next_step, body, origin FROM progress_signal
+        WHERE project_id = ? AND kind = 'memory_file' AND body IS NOT NULL
+        ORDER BY ts DESC LIMIT 1
+    """, (project_id,)).fetchone()
+    if sig is None:
+        return None
+    memory_day = _iso_day(sig["ts"])
+    if memory_day is None:
+        return None
+
+    touches = [t for t in con.execute("""
+        SELECT path, MAX(ts) AS last_ts FROM file_touch
+        WHERE project_id = ? AND ts IS NOT NULL GROUP BY path
+    """, (project_id,)) if _iso_day(t["last_ts"])]
+    if not touches:
+        return None
+
+    latest_day = max(_iso_day(t["last_ts"]) for t in touches)
+    ref_day = (_iso_day(now) or latest_day) if now else latest_day
+    origin = sig["origin"] or "手寫進度檔"
+
+    # 1) 進度檔還在講、實作卻早就放著沒動的檔案
+    if sig["goal"] or sig["next_step"]:
+        cold = []
+        for cand in P.memory_paths(sig["body"]):
+            hits = [t for t in touches if _touch_matches(t["path"], cand)]
+            if not hits:
+                continue          # 這個專案從來沒碰過 -> 不是專案檔，不算
+            newest = max(hits, key=lambda t: t["last_ts"])
+            day = _iso_day(newest["last_ts"])
+            if (ref_day - day).days >= MISMATCH_COLD_DAYS:
+                cold.append((day, newest["path"]))
+        if cold:
+            cold.sort()
+            names = [rel_to_project(p, real_path).replace("\\", "/") for _, p in cold]
+            shown = "、".join(names[:3]) + (f" 等 {len(names)} 個" if len(names) > 3 else "")
+            return {"kind": "mentioned_untouched",
+                    "detail": f"{origin} 提到 {shown}，{MISMATCH_COLD_DAYS} 天內沒改過",
+                    "files": [p for _, p in cold], "memory_ts": sig["ts"]}
+
+    # 2) 進度檔整份落後：實作一路往前，手寫的那份停在很久以前
+    gap = (latest_day - memory_day).days
+    if gap >= MISMATCH_STALE_DAYS:
+        since = con.execute(
+            "SELECT COUNT(*) FROM file_touch WHERE project_id = ? AND ts > ?",
+            (project_id, sig["ts"])).fetchone()[0]
+        if since >= MISMATCH_STALE_TOUCHES:
+            return {"kind": "stale_memory",
+                    "detail": f"{origin} 已 {gap} 天沒更新，期間改了 {since} 次檔",
+                    "files": [], "memory_ts": sig["ts"]}
+    return None
 
 
 # @F5-api
