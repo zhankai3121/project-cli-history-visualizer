@@ -297,7 +297,11 @@ Windows 主目錄、巢狀子專案、WSL 的專案各自收成一組，可逐�
 `position` 這類屬性一律禁止，所以換主題不可能把 RWD 弄壞。
 `tests/test_web.py` 會逐條掃描每個主題規則（含 descendant）強制這件事。
 
-選擇存 localStorage。
+明暗與主題**共用同一個選單**，互斥：選「預設 · 亮/暗」走 `data-theme`（沿用預設配色），
+選主題走 `data-skin` 並清掉 `data-theme` —— 主題自己定義了全部色票，兩個屬性同時掛著
+只會互相干擾。
+
+沒選過之前跟隨系統的 `prefers-color-scheme`，而且**不寫入** localStorage；選過才存。
 
 ### 響應式
 
