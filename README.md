@@ -186,12 +186,13 @@ Server 每次提供專案清單時會順手 stat 一次資料夾，所以資料�
 
 ## 外觀主題
 
-10 種主題，色票與元件語言取自 **[Fable 5.1 × CRM · 100 種風格](https://zhankai3121.github.io/fable-crm-100-styles/)**
-（[原始碼](https://github.com/zhankai3121/fable-crm-100-styles)）隨機抽樣的 10 支 demo。
+10 種主題，色票與元件語言取自 **[Fable 5.1 · 100 HTML Files](https://miaai-lab.github.io/Fable-5.1-100-HTML-Files/)**
+（[miaai-lab](https://github.com/miaai-lab/Fable-5.1-100-HTML-Files)）隨機抽樣的 10 支 demo。
+同一批風格套用到 CRM 模板的版本可見 [Fable 5.1 × CRM · 100 種風格](https://zhankai3121.github.io/fable-crm-100-styles/)。
 
 **改的不只顏色** —— 每個主題各自定義卡片背景（可為漸層）、邊框粗細、陰影、內框、圓角、
 毛玻璃、整頁漸層底、質感疊層、字體與字距。下表的「來源」是抽中的那支 demo，
-可以到風格庫對照原始設計：
+編號即原作的檔名，可以到上面的風格庫對照原始設計：
 
 | 主題 | 來源 demo | 元件特徵 |
 |---|---|---|
