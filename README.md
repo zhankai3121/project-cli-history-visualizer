@@ -457,6 +457,7 @@ jsonl 是 append-only，所以 `scan_state` 記錄每個檔案的 `(mtime, size,
 | `GET /api/project/{id}/tokens` | 該專案的 token 用量：總量、模型分佈、每日曲線、子代理佔比 |
 | `GET /api/project/{id}/files?limit=` | 該專案被改最多次的檔案（Windows 上大小寫視為同一檔；`rel` 已去掉專案前綴，比對時 `\`/`/` 都當分隔） |
 | `GET /api/project/{id}/file?path=` | 某個檔案被哪些 session 改過（`path` 用 `/files` 回的原始路徑，含反斜線）；查無資料回空 list |
+| `GET /api/project/{id}/timeline?limit=` | 目標演進：away_summary／compact_summary／手寫 memory 檔依時間遞增（不含 `last_prompt`、`cost_state`） |
 | `GET /api/day/{YYYY-MM-DD}` | 某一天的所有 prompt |
 | `GET /api/week?start=YYYY-MM-DD` | 一週回顧：專案、commit、紅旗、token，附上週對照（`start` 預設本週一，時間以 UTC 分界） |
 | `POST /api/reindex` | 增量重新索引 |
