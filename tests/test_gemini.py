@@ -292,6 +292,12 @@ def test_覆寫式檔案重讀不重複(gemini_home):
     indexer.run()
     assert counts() == second, "第二次增量又插了一份"
 
+    # 洗成只剩 session_context（沒有任何真人／gemini 訊息）-> 舊列與 session 列都要走
+    write_session(chat, [HEADER, CONTEXT, {"$set": {"messages": []}}])
+    indexer.run()
+    assert counts() == {"prompt": 0, "turn": 0, "file_touch": 0, "command_run": 0}
+    assert q(db, "SELECT COUNT(*) n FROM session WHERE id LIKE ?", f"{SESSION_ID}%")[0]["n"] == 0
+
 
 def test_孤兒檔不會生出空的_session(gemini_home):
     rows = q(gemini_home["db"], "SELECT id FROM session WHERE tool = 'gemini'")

@@ -801,7 +801,7 @@ function card(p) {
     p.agents ? `${p.agents} 個子代理` : null,
     p.tokens_out ? `${fmt(p.tokens_out)} tok out` : null,
     tools.length > 1 ? tools.map(t => TOOL_LABEL[t] || t).join(" + ")
-                     : (tools[0] === "codex" ? TOOL_LABEL.codex : null),
+                     : (tools[0] && tools[0] !== "claude" ? (TOOL_LABEL[tools[0]] || tools[0]) : null),
   ].filter(Boolean).join(" · ");
 
   return `<article class="${cls.join(" ")}" data-id="${p.id}">

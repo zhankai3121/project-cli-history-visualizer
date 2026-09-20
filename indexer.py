@@ -785,18 +785,21 @@ def index_gemini_session(con, resolver, path):
         offset = new_offset
 
     meta, messages = gemini.replay(records)
+    session_id = gemini.session_id_of(path, meta.get("sessionId"))
+
+    # 重播是「整份重來」，舊的列一定要先清掉，否則每次檔案變動都多一份。
+    # 清在 worth_indexing 之前：檔案被 $set / $rewindTo 洗成空的，舊列也要跟著走。
+    for table in ("prompt", "turn", "file_touch", "command_run", "commit_ref"):
+        con.execute(f"DELETE FROM {table} WHERE session_id = ?", (session_id,))
+
     if not gemini.worth_indexing(messages):
+        con.execute("DELETE FROM session WHERE id = ?", (session_id,))
         save_cursor(con, path, offset)                # 孤兒檔，記下來別再重讀
         return 0, 0
 
-    session_id = gemini.session_id_of(path, meta.get("sessionId"))
     project_id = gemini_project(con, resolver, gemini.project_root_of(path))
     resolver.ensure_session(session_id, project_id, tool="gemini",
                             transcript_state="live", transcript_path=str(path))
-
-    # 重播是「整份重來」，舊的列一定要先清掉，否則每次檔案變動都多一份
-    for table in ("prompt", "turn", "file_touch", "command_run", "commit_ref"):
-        con.execute(f"DELETE FROM {table} WHERE session_id = ?", (session_id,))
 
     prompts = turns = seq = 0
     pending_error = False
