@@ -32,6 +32,8 @@ app = FastAPI(title="CLI History Visualizer")
 def db():
     con = sqlite3.connect(indexer.DB_PATH)
     con.row_factory = sqlite3.Row
+    # 背景 watcher 可能正在寫：等最多 5 秒，別直接丟 "database is locked"
+    con.execute("PRAGMA busy_timeout = 5000")
     return con
 
 

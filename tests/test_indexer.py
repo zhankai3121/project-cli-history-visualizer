@@ -3,6 +3,8 @@
 import json
 import sqlite3
 
+import pytest
+
 import indexer
 from conftest import jsonl, user_prompt, assistant
 
@@ -148,3 +150,37 @@ def test_中文子目錄不會因為_slug_撞名而合併(fake_home):
              rows(fake_home["db"], "SELECT real_path FROM project")]
     for name in ("完整規劃", "問題規劃", "套版整合"):
         assert str(work / name) in paths, f"{name} 被合併掉了"
+
+
+def test_watch_跑到_max_runs_就停(indexed):
+    assert indexer.watch(interval=0, max_runs=2) == 2
+
+
+def test_watch_拒絕_full():
+    """--full 會刪掉 DB 檔，讓正在跑的 server 抱著失效的 fd。"""
+    with pytest.raises(SystemExit) as caught:
+        indexer.main(["--watch", "--full"])
+    assert caught.value.code == 2
+
+
+def test_busy_timeout_已設定(indexed):
+    """watcher 與 server 同時寫時，慢的一方要等，不是直接報錯。"""
+    import server
+
+    for con in (indexer.connect(), server.db()):
+        assert con.execute("PRAGMA busy_timeout").fetchone()[0] == 5000
+        con.close()
+
+
+def test_watch_遇到鎖不會退出(indexed, monkeypatch, capsys):
+    real_run, calls = indexer.run, []
+
+    def flaky(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            raise sqlite3.OperationalError("database is locked")
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(indexer, "run", flaky)
+    assert indexer.watch(interval=0, max_runs=2) == 2
+    assert "DB 忙" in capsys.readouterr().out

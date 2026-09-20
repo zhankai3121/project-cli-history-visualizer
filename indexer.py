@@ -8,12 +8,15 @@
 用法：
     python indexer.py           # 增量
     python indexer.py --full    # 砍掉重建
+    python indexer.py --watch   # 常駐背景，每 5 分鐘跑一次增量
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime as dt
+import io
 import json
 import os
 import re
@@ -82,6 +85,8 @@ def utcnow_iso():
 def connect():
     con = sqlite3.connect(DB_PATH)
     con.row_factory = sqlite3.Row
+    # 背景 watcher 與 server 會同時寫：WAL 之外再給 5 秒等鎖，別直接丟 "database is locked"
+    con.execute("PRAGMA busy_timeout = 5000")
     con.executescript(SCHEMA.read_text(encoding="utf-8"))
     migrate(con)
     return con
@@ -218,7 +223,10 @@ def index_history(con, resolver):
 
     BACKUP_DIR.mkdir(exist_ok=True)
     stamp = dt.date.today().isoformat()
-    shutil.copy2(HISTORY, BACKUP_DIR / f"history-{stamp}.jsonl")
+    backup = BACKUP_DIR / f"history-{stamp}.jsonl"
+    # --watch 每輪都會走到這裡：同一天、大小沒變就不用再抄一次
+    if not backup.exists() or backup.stat().st_size != HISTORY.stat().st_size:
+        shutil.copy2(HISTORY, backup)
 
     offset = scan_cursor(con, HISTORY)
     if offset is None:
@@ -1023,10 +1031,66 @@ def sync_only(con):
     return appeared, vanished
 
 
-if __name__ == "__main__":
+def watch(interval=300, force_git=False, max_runs=None):
+    """背景蒸餾：每 interval 秒跑一次增量索引，Ctrl+C 停止，回傳跑了幾輪。
+
+    transcript 30 天後會被 CLI 自己清掉，索引不能只在有人開網頁時才發生。
+    一輪出事（DB 被鎖、檔案讀壞）只印一行就進下一輪，不退出。
+    """
+    runs, last = 0, None
+    try:
+        while max_runs is None or runs < max_runs:
+            runs += 1
+            quiet = io.StringIO()          # run() 每輪印兩行，太吵；有新東西才由這裡轉述
+            try:
+                with contextlib.redirect_stdout(quiet):
+                    stats = run(full=False, force_git=force_git)
+            except sqlite3.OperationalError as exc:
+                note = ("DB 忙，下一輪再試" if "locked" in str(exc).lower()
+                        else f"DB 出錯，下一輪再試：{exc}")
+                print(f"[{utcnow_iso()}] {note}", flush=True)
+            except Exception as exc:
+                print(f"[{utcnow_iso()}] 索引失敗，下一輪再試：{exc}", flush=True)
+            else:
+                added = ({k: stats[k] - last[k] for k in ("prompt", "turn")}
+                         if last else None)
+                if added is None:
+                    print(f"[{utcnow_iso()}] 開始盯著看："
+                          f"{stats['prompt']} prompts / {stats['turn']} turns", flush=True)
+                elif added["prompt"] or added["turn"]:
+                    print(f"[{utcnow_iso()}] +{added['prompt']} prompts / "
+                          f"+{added['turn']} turns", flush=True)
+                last = stats
+            if max_runs is not None and runs >= max_runs:
+                break
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        print(f"[{utcnow_iso()}] 收到 Ctrl+C，停止", flush=True)
+    return runs
+
+
+def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--full", action="store_true", help="砍掉重建")
     ap.add_argument("--force-git", action="store_true",
                     help="忽略快取，重讀所有 repo 的 git 狀態")
-    args = ap.parse_args()
-    run(full=args.full, force_git=args.force_git)
+    ap.add_argument("--watch", action="store_true",
+                    help="常駐背景，每 --interval 秒跑一次增量")
+    ap.add_argument("--interval", type=int, default=300,
+                    help="--watch 的間隔秒數（預設 300，最小 30）")
+    ap.add_argument("--max-runs", type=int, default=None, help=argparse.SUPPRESS)
+    args = ap.parse_args(argv)
+    if args.watch and args.full:
+        # --full 會刪掉 DB 檔，讓正在跑的 server 抱著失效的 fd
+        ap.error("--watch 不能和 --full 一起用；要重建請先關掉 watcher 與 server")
+    if args.watch:
+        # --max-runs 是測試用的暗門，真的常駐時才強制最小間隔
+        interval = args.interval if args.max_runs is not None else max(args.interval, 30)
+        watch(interval=interval, force_git=args.force_git, max_runs=args.max_runs)
+    else:
+        run(full=args.full, force_git=args.force_git)
+
+
+if __name__ == "__main__":
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    main()

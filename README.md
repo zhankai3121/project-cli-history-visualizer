@@ -64,6 +64,7 @@ python -c "import sqlite3; c=sqlite3.connect(':memory:'); c.execute(\"create vir
 python indexer.py              # 增量（只讀 jsonl 新增的部分，git 狀態吃快取）
 python indexer.py --force-git  # 增量，但重讀所有 repo 的 git 狀態
 python indexer.py --full       # 砍掉重建（專案根目錄設定會保留）
+python indexer.py --watch      # 常駐背景，每 300 秒跑一次增量（見「背景蒸餾」）
 ```
 
 **git 狀態是有快取的。** 每個 repo 要跑三次 git 指令，在 WSL 的 UNC 路徑上單一 repo
@@ -84,6 +85,39 @@ python indexer.py --full       # 砍掉重建（專案根目錄設定會保留�
 .venv\Scripts\pip install -r requirements-dev.txt
 .venv\Scripts\python -m pytest tests/ -q
 ```
+
+### 背景蒸餾
+
+**transcript 30 天後會被 CLI 自己刪掉**，而索引預設只在開網頁時才跑。人沒開網頁的
+那幾週，`projects/*.jsonl` 裡的 turn、改檔、commit 就這樣沒了 —— history.jsonl 的
+prompt 骨幹還在，過程沒了。所以要讓索引定期自己跑。三種做法，挑一種：
+
+```bash
+# (a) 自己常駐，前景跑，Ctrl+C 停
+python indexer.py --watch --interval 300     # 最小 30 秒，預設 300
+```
+
+```powershell
+# (b) Windows 工作排程器：每 10 分鐘跑一次「單次」索引，不用 --watch
+schtasks /create /tn CLIHV-index /sc minute /mo 10 ^
+  /tr "\"<repo>\.venv\Scripts\python.exe\" \"<repo>\indexer.py\""
+```
+
+排程器建的工作要把環境變數 `PYTHONIOENCODING=utf-8` 設起來（Big5 主控台會炸在中文輸出）。
+
+```bash
+# (c) cron
+*/10 * * * * cd <repo> && .venv/bin/python indexer.py >> index.log 2>&1
+```
+
+`--watch` 每輪只有真的有新東西才印一行；DB 被鎖之類的例外只印一行就進下一輪，不會整個掛掉。
+
+**跟 server 並存沒問題。** DB 開 WAL，讀寫互不擋；`indexer.connect()` 和 `server.db()`
+都設了 `PRAGMA busy_timeout = 5000`，兩邊同時寫時慢的那方最多等 5 秒，不會壞資料
+（索引每個管線各 commit 一次，都是短交易）。
+
+**唯一的例外是 `--full`**：它會刪掉 `index.db` 檔案本身，正在跑的 server 會抱著一個
+失效的 fd。要重建請先關掉 server 和 watcher。`--watch --full` 直接被擋下來。
 
 ### 設定專案資料夾
 
