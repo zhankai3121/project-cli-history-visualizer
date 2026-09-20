@@ -45,9 +45,15 @@
   --accent:#6f9bff; --flag:#ff6b6b; --ok:#4ad295; --gone:#5b6470;
   --cell0:#232830; --cell1:#26406e; --cell2:#31589c; --cell3:#4174cd; --cell4:#5e95f5;
 }
-/* 全站字級的唯一旋鈕。所有 font-size 都是 rem，改這一個值整站等比縮放。
-   標頭的 A- / A+ 會改它並存進 localStorage。 */
-:root{ --fs:24px; }
+/* 全站字級的唯一旋鈕。所有 font-size 都是 rem，改這裡整站等比縮放。
+   clamp 的斜率是解 375px→17px、1440px→24px 這兩點得到的，中間平滑內插；
+   以前是 24/20/18/17 四段階梯，跨斷點會看到字突然跳一階。
+   --fs-scale 是使用者按 A- / A+ 調的倍率，存 localStorage。存倍率而不是
+   絕對 px：在寬螢幕調過之後，換到手機仍然吃得到上面的響應式縮放。 */
+:root{
+  --fs-scale:1;
+  --fs:calc(clamp(17px, 0.657vw + 14.54px, 24px) * var(--fs-scale));
+}
 html{font-size:var(--fs)}
 
 *{box-sizing:border-box}
@@ -128,8 +134,11 @@ main{padding:.7em .85em 1.2em}
 .empty{color:var(--dim); font-style:italic}
 .back{background:none; border:none; color:var(--accent); padding:0; margin-bottom:.5em;
       font-size:.8rem}
-.split{display:grid; grid-template-columns:minmax(14rem,26%) 1fr; gap:.8em; align-items:start}
-.list{display:flex; flex-direction:column; gap:.35em; max-height:78vh; overflow:auto}
+/* flex-wrap 讓側欄在放不下時自己換行，不需要斷點。兩邊的 flex-basis 加起來
+   約 42rem，所以大概在 870px 左右自然塌成上下堆疊。 */
+.split{display:flex; flex-wrap:wrap; gap:.8em; align-items:flex-start}
+.list{flex:1 1 16rem; min-width:0; max-width:100%;
+      display:flex; flex-direction:column; gap:.35em; max-height:78vh; overflow:auto}
 .sess{
   background:var(--card-bg); border:var(--border-w) solid var(--line);
   border-radius:var(--radius); padding:.45em .6em; cursor:pointer;
@@ -138,7 +147,8 @@ main{padding:.7em .85em 1.2em}
 .sess:hover,.sess[aria-current="true"]{border-color:var(--accent)}
 .sess .t{font-size:.82rem; font-weight:600}
 .sess .m{font-size:.66rem; color:var(--dim)}
-.pane{background:var(--card-bg); border:var(--border-w) solid var(--line);
+.pane{flex:3 1 26rem; min-width:0; max-width:100%;
+      background:var(--card-bg); border:var(--border-w) solid var(--line);
       border-radius:var(--radius); box-shadow:var(--shadow), var(--card-inset);
       backdrop-filter:var(--blur); padding:.8em; max-height:78vh; overflow:auto}
 .turn{border-left:2px solid var(--line); padding:.1em 0 .7em .6em; margin-left:.15em}
@@ -393,23 +403,17 @@ kbd{font:.58rem/1 ui-monospace,monospace; border:1px solid var(--line); border-b
    --fs 是行內樣式時（使用者按過 A+/A-）會蓋過這裡的預設，這是對的 ——
    而且 localStorage 每個瀏覽器各自獨立，手機第一次來還是吃預設值。 */
 
-@media (max-width: 1100px){
-  .split{grid-template-columns:minmax(12rem,32%) 1fr}
-}
-
+/* 字級與 .split 的欄寬都不在這裡了 —— clamp() 與 flex-wrap 自己會處理。
+   剩下的是真的沒辦法用內建機制表達的：高度是視窗相關的，堆疊之後兩個
+   78vh 會變 156vh，這個只能靠斷點。 */
 @media (max-width: 900px){
-  :root{ --fs:20px; }
   main{padding:.6em .7em 1.2em}
-  /* 左右欄改上下堆疊 —— 兩欄各自的 78vh 疊起來會變成 156vh */
-  .split{grid-template-columns:1fr; gap:.7em}
   .list{max-height:38vh}
   .pane{max-height:none}
-  .card h2{flex-wrap:wrap}
   .card h2 em{white-space:normal}
 }
 
 @media (max-width: 640px){
-  :root{ --fs:18px; }
   header{padding:.5em .6em; gap:.3em}
   /* 搜尋框獨占一行。刻意不用 order —— 那會讓視覺順序與 Tab 順序不一致
      （WCAG 2.4.3）。#q 本來就是第二個子元素，撐滿一行自然會換行到第二列。 */
@@ -426,7 +430,6 @@ kbd{font:.58rem/1 ui-monospace,monospace; border:1px solid var(--line); border-b
 }
 
 @media (max-width: 420px){
-  :root{ --fs:17px; }
   .chips{gap:.25em}
   /* 只收橫向 —— 縱向留給下面的觸控區塊，不然兩邊會互相覆蓋 */
   .chip{padding-left:.5em; padding-right:.5em}
@@ -1060,23 +1063,29 @@ function setSkin(name) {
 
 $("#skin").onchange = e => setSkin(e.target.value);
 
-/* 字級：整站唯一旋鈕 --fs，A-/A+ 每次 ±2px，範圍 12–40px */
-const FS_MIN = 12, FS_MAX = 40, FS_DEFAULT = 24;
+/* 字級：--fs 已經是 clamp() 的響應式基準，A-/A+ 只調倍率。
+   存倍率而不是絕對 px —— 在 27 吋調大之後換到手機，仍然吃得到響應式縮放。 */
+const SCALE_MIN = 0.7, SCALE_MAX = 2.0, SCALE_STEP = 0.1;
 
-function setFontSize(px) {
-  const size = Math.min(FS_MAX, Math.max(FS_MIN, px));
-  document.documentElement.style.setProperty("--fs", size + "px");
-  try { localStorage.setItem("clihv-fs", size); } catch {}
-  return size;
+function setFontScale(scale) {
+  const s = Math.round(Math.min(SCALE_MAX, Math.max(SCALE_MIN, scale)) * 100) / 100;
+  document.documentElement.style.setProperty("--fs-scale", s);
+  const px = Math.round(parseFloat(
+    getComputedStyle(document.documentElement).fontSize) || 0);
+  for (const id of ["#fsdec", "#fsinc"]) {
+    $(id).title = `字級 ${Math.round(s * 100)}%（目前約 ${px}px）`;
+  }
+  try { localStorage.setItem("clihv-fs-scale", s); } catch {}
+  return s;
 }
 
-function currentFontSize() {
-  const raw = getComputedStyle(document.documentElement).getPropertyValue("--fs");
-  return parseFloat(raw) || FS_DEFAULT;
+function currentFontScale() {
+  return parseFloat(getComputedStyle(document.documentElement)
+    .getPropertyValue("--fs-scale")) || 1;
 }
 
-$("#fsinc").onclick = () => setFontSize(currentFontSize() + 2);
-$("#fsdec").onclick = () => setFontSize(currentFontSize() - 2);
+$("#fsinc").onclick = () => setFontScale(currentFontScale() + SCALE_STEP);
+$("#fsdec").onclick = () => setFontScale(currentFontScale() - SCALE_STEP);
 
 $("#theme").onclick = () => {
   const dark = document.documentElement.getAttribute("data-theme") === "dark";
@@ -1100,8 +1109,15 @@ document.addEventListener("keydown", e => {
 try {
   const saved = localStorage.getItem("clihv-theme");
   if (saved) document.documentElement.setAttribute("data-theme", saved);
-  const fs = parseFloat(localStorage.getItem("clihv-fs"));
-  if (fs) setFontSize(fs);
+  const scale = parseFloat(localStorage.getItem("clihv-fs-scale"));
+  if (scale) {
+    setFontScale(scale);
+  } else {
+    // 舊版存的是絕對 px，換算成倍率（20px 是舊階梯的中段）後丟掉舊鍵
+    const legacy = parseFloat(localStorage.getItem("clihv-fs"));
+    if (legacy) setFontScale(legacy / 20);
+    localStorage.removeItem("clihv-fs");
+  }
   const skin = localStorage.getItem("clihv-skin");
   if (skin) setSkin(skin);
   const group = localStorage.getItem("clihv-group");

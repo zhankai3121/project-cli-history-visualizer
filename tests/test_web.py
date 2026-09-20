@@ -141,49 +141,61 @@ def test_自動排版軌道的下限會被視窗夾住():
     assert bad == [], f"這些自動軌道的下限是固定值，窄螢幕會溢出: {bad}"
 
 
-def test_固定寬側欄一定要有單欄退路():
-    """.split 這種固定兩欄的，下限可以是固定值，但窄螢幕一定要能塌成單欄。"""
-    risky = set()
-    for m in re.finditer(r"([.#][\w-]+)\s*\{([^}]*)\}", CSS):
-        for prop, value in decls(m.group(2)):
-            if prop != "grid-template-columns" or "repeat(" in value:
-                continue
-            for part in value.split():
-                if "minmax(" in part or FIXED_LEN.match(part):
-                    risky.add(m.group(1))
-    assert risky, "沒掃到任何固定欄數的 grid，測試會空轉"
+def test_固定寬欄位一定要有單欄退路():
+    """任何固定欄數 + 固定寬度的 grid，窄螢幕都必須能塌成單欄。"""
+    all_cols = [(m.group(1), v) for m in re.finditer(r"([.#][\w-]+)\s*\{([^}]*)\}", CSS)
+                for p, v in decls(m.group(2)) if p == "grid-template-columns"]
+    assert all_cols, "一個 grid-template-columns 都沒掃到，測試會空轉"
 
+    risky = {sel for sel, value in all_cols
+             if "repeat(" not in value
+             and any("minmax(" in part or FIXED_LEN.match(part)
+                     for part in value.split())}
+    narrow = media_body(max_w=999)
     for sel in risky:
-        found = False
-        for m in re.finditer(r"@media\s*\(max-width:\s*(\d+)px\)\s*\{", CSS):
-            tail = CSS[m.end():]
-            depth, i = 1, 0
-            while i < len(tail) and depth:
-                depth += (tail[i] == "{") - (tail[i] == "}")
-                i += 1
-            if re.search(re.escape(sel) + r"\s*\{[^}]*grid-template-columns:\s*1fr",
-                         tail[:i]):
-                found = True
-                break
-        assert found, f"{sel} 用了固定寬欄位，但沒有任何斷點讓它塌成單欄"
+        assert re.search(re.escape(sel) + r"\s*\{[^}]*grid-template-columns:\s*1fr",
+                         narrow), f"{sel} 用了固定寬欄位，但沒有斷點讓它塌成單欄"
 
 
-def test_split_在窄螢幕改單欄():
+def media_body(min_w=0, max_w=10_000):
+    """把符合寬度範圍的 max-width 區塊內容串起來。"""
+    out = []
     for m in re.finditer(r"@media\s*\(max-width:\s*(\d+)px\)\s*\{", CSS):
+        if not (min_w <= int(m.group(1)) <= max_w):
+            continue
         tail = CSS[m.end():]
         depth, i = 1, 0
         while i < len(tail) and depth:
             depth += (tail[i] == "{") - (tail[i] == "}")
             i += 1
-        if re.search(r"\.split\s*\{[^}]*grid-template-columns:\s*1fr", tail[:i]):
-            return
-    pytest.fail(".split 沒有在任何斷點改成單欄")
+        out.append(tail[:i])
+    return "".join(out)
+
+
+def test_split_在窄螢幕會堆疊():
+    """兩種機制都接受：flex-wrap 自然塌陷，或斷點改單欄。"""
+    m = re.search(r"\.split\s*\{([^}]*)\}", CSS)
+    assert m, "找不到 .split"
+    props = dict(decls(m.group(1)))
+
+    if props.get("display") == "flex" and props.get("flex-wrap") == "wrap":
+        # 靠 flex-wrap 塌陷的話，子項一定要有 flex-basis，否則永遠不換行
+        for sel in (".list", ".pane"):
+            child = dict(decls(re.search(re.escape(sel) + r"\s*\{([^}]*)\}",
+                                         CSS).group(1)))
+            assert "flex" in child or "flex-basis" in child, \
+                f"{sel} 沒有 flex-basis，.split 不會換行"
+            assert child.get("min-width") == "0", \
+                f"{sel} 沒有 min-width:0，長內容會撐破 flex 容器"
+        return
+
+    assert re.search(r"\.split\s*\{[^}]*grid-template-columns:\s*1fr",
+                     media_body(max_w=999)), \
+        ".split 既沒用 flex-wrap，也沒有任何斷點改成單欄"
 
 
 def test_堆疊時不會兩個滿版高度相加():
-    narrow = "".join(
-        CSS[m.end():m.end() + 2000]
-        for m in re.finditer(r"@media\s*\(max-width:\s*[0-9]{3}px\)\s*\{", CSS))
+    narrow = media_body(max_w=999)
     assert re.search(r"\.pane\s*\{[^}]*max-height:\s*none", narrow) or \
            re.search(r"\.list\s*\{[^}]*max-height:\s*[1-4]?\dvh", narrow), \
            "窄螢幕沒有處理 .list / .pane 的高度"
@@ -234,6 +246,26 @@ def test_字級旋鈕有接上():
     assert re.search(r"--fs\s*:", CSS)
     assert re.search(r"html\s*\{[^}]*font-size:\s*var\(\s*--fs\s*\)", CSS), \
         "html 沒有吃 var(--fs)"
+
+
+def test_字級用_clamp_連續縮放而不是階梯():
+    """階梯會在跨斷點時讓字突然跳一階；clamp 是連續的。"""
+    # CSS 裡有多個 :root{} 區塊（色票一個、字級一個），全部合起來看
+    root = "".join(m.group(1) for m in re.finditer(r":root\s*\{([^}]*)\}", CSS))
+    fs = dict(decls(root)).get("--fs", "")
+    assert "clamp(" in fs, f"--fs 不是 clamp(): {fs}"
+    assert "vw" in fs, "clamp 中段沒有 vw，等於沒有隨視窗縮放"
+    assert "var(--fs-scale" in fs, "--fs 沒有吃使用者倍率"
+    # 斷點裡不該再出現 --fs，否則又變回階梯
+    assert "--fs:" not in media_body(), "媒體查詢裡還有 --fs，階梯沒清乾淨"
+
+
+def test_字級倍率是相對值不是絕對_px():
+    """存絕對 px 的話，在寬螢幕調過之後換到手機會黏著不放。"""
+    assert "clihv-fs-scale" in RAW_JS
+    assert "--fs-scale" in RAW_JS
+    assert not re.search(r'setProperty\(\s*"--fs"\s*,', RAW_JS), \
+        "JS 直接覆寫 --fs，會蓋掉 clamp() 的響應式行為"
 
 
 # ── 主題不准碰版面 ────────────────────────────────────────────────────────
