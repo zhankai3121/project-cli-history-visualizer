@@ -593,6 +593,74 @@ def project_tokens(project_id: int):
 
 # @F2-api
 
+def rel_to_project(path, root):
+    """去掉專案前綴。Windows 上不分大小寫，`\\` 與 `/` 一視同仁。
+
+    同一個檔在紀錄裡可能寫成 `C:\\work\\a.py` 或 `c:/work/a.py`，兩種都要能
+    對上專案根目錄。正規化只做「換字元」與「轉小寫」，長度不變，所以可以拿
+    正規化後的長度回頭切原字串，切出來的 rel 保留原本的大小寫與分隔符。
+    去不掉就回原路徑。
+    """
+    if not root:
+        return path
+
+    def norm(s):
+        s = s.replace("\\", "/")
+        return s.lower() if os.name == "nt" else s
+
+    base = norm(root).rstrip("/")
+    if base and norm(path).startswith(base + "/"):
+        return path[len(base) + 1:]
+    return path
+
+
+@app.get("/api/project/{project_id}/files")
+def project_files(project_id: int, limit: int = Query(60, ge=1, le=500)):
+    """這個專案被改最多次的檔案。子代理改的也算，但另外記在 agent_n。"""
+    con = db()
+    proj = con.execute(
+        "SELECT real_path FROM project WHERE id = ?", (project_id,)).fetchone()
+    if proj is None:
+        con.close()
+        raise HTTPException(404, "no such project")
+    # Windows 上同一個檔可能有 C:\ 與 c:\ 兩種寫法，合併計次才不會拆成兩筆
+    group_key = "lower(path)" if os.name == "nt" else "path"
+    files = rows(con.execute(f"""
+        SELECT MIN(path) AS path, COUNT(*) AS n,
+               SUM(verb = 'Edit')          AS edits,
+               SUM(verb = 'Write')         AS writes,
+               SUM(via_agent IS NOT NULL)  AS agent_n,
+               COUNT(DISTINCT session_id)  AS sessions,
+               MAX(ts)                     AS last_ts
+        FROM file_touch WHERE project_id = ?
+        GROUP BY {group_key} ORDER BY n DESC, last_ts DESC LIMIT ?
+    """, (project_id, limit)))
+    con.close()
+    root = proj["real_path"]
+    for f in files:
+        f["rel"] = rel_to_project(f["path"], root)
+    return {"root": root, "files": files}
+
+
+@app.get("/api/project/{project_id}/file")
+def project_file(project_id: int, path: str = Query(..., min_length=1)):
+    """這個檔案被哪些 session 改過。path 是 /files 回的原始路徑（含反斜線）。"""
+    con = db()
+    if con.execute("SELECT 1 FROM project WHERE id = ?", (project_id,)).fetchone() is None:
+        con.close()
+        raise HTTPException(404, "no such project")
+    match = "lower(f.path) = lower(?)" if os.name == "nt" else "f.path = ?"
+    sessions = rows(con.execute(f"""
+        SELECT s.id, s.title, s.started_at, COUNT(*) AS n,
+               GROUP_CONCAT(DISTINCT f.verb)   AS verbs,
+               SUM(f.via_agent IS NOT NULL)    AS via_agent_n
+        FROM file_touch f JOIN session s ON s.id = f.session_id
+        WHERE f.project_id = ? AND {match}
+        GROUP BY s.id ORDER BY COALESCE(s.started_at, '') DESC
+    """, (project_id, path)))
+    con.close()
+    return {"path": path, "sessions": sessions}
+
 
 # @F3-api
 
