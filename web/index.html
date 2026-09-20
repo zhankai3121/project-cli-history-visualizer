@@ -187,7 +187,8 @@ kbd{font:.58rem/1 ui-monospace,monospace; border:1px solid var(--line); border-b
 .manualrow input{flex:1; font-size:.72rem; font-family:ui-monospace,monospace}
 
 /* ── 外觀主題 ──────────────────────────────────────────────────────────
-   色票取自 Fable-5.1-100-HTML-Files 的 10 個 demo（隨機抽樣）。
+   色票與元件語言取自 https://zhankai3121.github.io/fable-crm-100-styles/
+   隨機抽樣的 10 支 demo，註解標的編號就是該風格庫的檔名。
    只重新定義變數，不動任何版面規則。必須排在 data-theme 區塊之後 ——
    特性值相同，靠原始碼順序取勝。 */
 
@@ -207,7 +208,7 @@ kbd{font:.58rem/1 ui-monospace,monospace; border:1px solid var(--line); border-b
   --texture-op:.04; --texture-blend:overlay;
 }
 
-/* 009 gradient-mesh — 毛玻璃 + 大圓角 + 背景暈染色團 */
+/* 009 morphing-gradient-mesh — 毛玻璃 + 大圓角 + 背景暈染色團 */
 :root[data-skin="mesh"]{
   --bg:#140b26; --panel:#1f1436; --line:rgba(255,250,240,.16); --ink:#fffaf0; --dim:#b8adc9;
   --accent:#ff6b57; --flag:#ff4d2e; --ok:#5be7a9; --gone:#6a5c80;
@@ -241,7 +242,7 @@ kbd{font:.58rem/1 ui-monospace,monospace; border:1px solid var(--line); border-b
   --texture-op:.45;
 }
 
-/* 028 mandala — 深玻璃 + 琥珀描邊 + 超寬字距標籤 */
+/* 028 generative-mandala — 深玻璃 + 琥珀描邊 + 超寬字距標籤 */
 :root[data-skin="mandala"]{
   --bg:#0d0e10; --panel:#1a1b1e; --line:rgba(255,255,255,.14); --ink:#e8e6df; --dim:#8b8c91;
   --accent:#f0b35a; --flag:#ff5e3a; --ok:#a7f3d0; --gone:#5a5c62;
@@ -311,7 +312,7 @@ kbd{font:.58rem/1 ui-monospace,monospace; border:1px solid var(--line); border-b
 :root[data-skin="atomic"] .card:hover{transform:translate(-3px,-3px)}
 :root[data-skin="atomic"] .chip[aria-pressed="true"]{box-shadow:3px 3px 0 var(--ink)}
 
-/* 093 zen — 無邊框 + 大圓角 + 柔霧陰影 */
+/* 093 pomodoro-zen-timer — 無邊框 + 大圓角 + 柔霧陰影 */
 :root[data-skin="zen"]{
   --bg:#12181c; --panel:#1a2228; --line:rgba(228,238,242,.10); --ink:#e4eef2; --dim:#93a6ae;
   --accent:#7fd4e8; --flag:#e88f7f; --ok:#9fe0b8; --gone:#5a6a72;

@@ -186,22 +186,45 @@ Server 每次提供專案清單時會順手 stat 一次資料夾，所以資料�
 
 ## 外觀主題
 
-10 種主題，色票與元件語言取自 [Fable 5.1 的 100 個 HTML demo](https://github.com/) 隨機抽樣。**改的不只顏色** —— 每個主題各自定義卡片背景（可為漸層）、邊框粗細、陰影、內框、圓角、毛玻璃、整頁漸層底、質感疊層、字體與字距。
+10 種主題，色票與元件語言取自 **[Fable 5.1 × CRM · 100 種風格](https://zhankai3121.github.io/fable-crm-100-styles/)**
+（[原始碼](https://github.com/zhankai3121/fable-crm-100-styles)）隨機抽樣的 10 支 demo。
 
-| 主題 | 元件特徵 |
-|---|---|
-| 石墨金屬 | 拉絲漸層面板、上緣 1px 高光、硬角、全大寫寬字距、SVG 噪點 |
-| 珊瑚紫霧 | `blur(16px)` 毛玻璃、20px 大圓角、圓形熱度圖格子、背景暈染色團 |
-| 黃銅熔岩 | 26px 燈罩圓角、暖色輝光、襯線字、45° 斜紋壁面 |
-| 琥珀曼陀羅 | 深玻璃、0.3em 超寬字距、中心放射暈 |
-| 蒸汽波 | 零圓角、2px 粗邊、霓虹 text-shadow、青／粉雙向網格、等寬字 |
-| 報紙頭版 | 零圓角、`3px double` 報頭、卡片內雙框、紙紋 multiply、襯線字 |
-| 原子時代 | 3px 粗框 + 6px 硬投影（hover 位移）、膠囊 chip、稿紙橫線 |
-| 靜水禪 | 完全無邊框、24px 大圓角、44px 柔霧陰影 |
-| 熱顯像 | 掃描線疊層、儀器內描邊、等寬全大寫、色階是真的熱力圖 |
-| 靛藍水面 | 水面三段漸層底、銀線玻璃、深投影 |
+**改的不只顏色** —— 每個主題各自定義卡片背景（可為漸層）、邊框粗細、陰影、內框、圓角、
+毛玻璃、整頁漸層底、質感疊層、字體與字距。下表的「來源」是抽中的那支 demo，
+可以到風格庫對照原始設計：
+
+| 主題 | 來源 demo | 元件特徵 |
+|---|---|---|
+| 石墨金屬 | `005-liquid-metal-blob` | 拉絲漸層面板、上緣 1px 高光、硬角、全大寫寬字距、SVG 噪點 |
+| 珊瑚紫霧 | `009-morphing-gradient-mesh` | `blur(16px)` 毛玻璃、20px 大圓角、圓形熱度圖格子、背景暈染色團 |
+| 黃銅熔岩 | `027-lava-lamp-css` | 26px 燈罩圓角、暖色輝光、襯線字、45° 斜紋壁面 |
+| 琥珀曼陀羅 | `028-generative-mandala` | 深玻璃、0.3em 超寬字距、中心放射暈 |
+| 蒸汽波 | `034-vaporwave-sunset` | 零圓角、2px 粗邊、霓虹 text-shadow、青／粉雙向網格、等寬字 |
+| 報紙頭版 | `055-newspaper-front-page` | 零圓角、`3px double` 報頭、卡片內雙框、紙紋 multiply、襯線字 |
+| 原子時代 | `071-atomic-age-retro-futurism` | 3px 粗框 + 6px 硬投影（hover 位移）、膠囊 chip、稿紙橫線 |
+| 靜水禪 | `093-pomodoro-zen-timer` | 完全無邊框、24px 大圓角、44px 柔霧陰影 |
+| 熱顯像 | `096-thermal-vision-heatmap` | 掃描線疊層、儀器內描邊、等寬全大寫、色階是真的熱力圖 |
+| 靛藍水面 | `099-water-ripple-reflection` | 水面三段漸層底、銀線玻璃、深投影 |
 
 主題只重新定義 CSS 變數，**不動任何版面規則**，所以換主題不會把排版弄壞。選擇存 localStorage。
+
+### 想自己加主題
+
+`web/index.html` 的 `:root[data-skin="..."]` 區塊就是全部。抄一份改變數即可，不用碰任何版面規則：
+
+```css
+:root[data-skin="mine"]{
+  --bg:…; --panel:…; --line:…; --ink:…; --dim:…; --accent:…; --on-accent:…;
+  --flag:…; --ok:…; --gone:…; --cell0:…; --cell1:…; --cell2:…; --cell3:…; --cell4:…;
+  /* 以下才是讓主題有個性的部分 */
+  --radius:…; --chip-radius:…; --cell-radius:…; --border-w:…;
+  --card-bg:…; --shadow:…; --hover-shadow:…; --card-inset:…; --blur:…;
+  --page-bg:…; --texture:…; --texture-op:…; --texture-blend:…;
+  --title-transform:…; --title-spacing:…; --label-transform:…; --font:…;
+}
+```
+
+再到標頭的 `<select id="skin">` 加一個 `<option value="mine">名稱</option>` 就完成。
 
 ---
 
