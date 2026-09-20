@@ -62,7 +62,14 @@ python -c "import sqlite3; c=sqlite3.connect(':memory:'); c.execute(\"create vir
 
 ```bash
 python indexer.py          # 增量（只讀 jsonl 新增的部分）
-python indexer.py --full   # 砍掉重建
+python indexer.py --full   # 砍掉重建（專案根目錄設定會保留）
+```
+
+跑測試：
+
+```bash
+.venv\Scripts\pip install -r requirements-dev.txt
+.venv\Scripts\python -m pytest tests/ -q
 ```
 
 ### 設定專案資料夾
@@ -222,6 +229,13 @@ Windows 主目錄、巢狀子專案、WSL 的專案各自收成一組，可逐�
 | 靛藍水面 | `099-water-ripple-reflection` | 水面三段漸層底、銀線玻璃、深投影 |
 
 主題只重新定義 CSS 變數，**不動任何版面規則**，所以換主題不會把排版弄壞。選擇存 localStorage。
+（`tests/test_web.py` 有一條測試會擋下在主題區塊裡寫版面規則的行為。）
+
+### 響應式
+
+斷點 1100 / 900 / 640 / 420px：900px 以下左右欄改上下堆疊，640px 以下搜尋框獨占一行、
+進度三行改單欄。另有 `pointer: coarse`（觸控裝置放大點擊區與熱度圖格子）與
+`prefers-reduced-motion`。字級隨斷點縮放，但按過 `A−`/`A+` 之後以使用者的選擇為準。
 
 ### 想自己加主題
 
@@ -251,6 +265,7 @@ indexer.py           掃 ~/.claude -> SQLite（增量，靠 mtime/size/offset）
 parser.py            JSONL / Markdown 判別式（規格來源是 docs/jsonl-schema.md）
 schema.sql           資料表與 FTS5 定義
 web/index.html       單檔前端，無 build step，零外部依賴
+tests/               pytest（86 個）—— 用合成資料，不碰真實的 ~/.claude
 docs/jsonl-schema.md 實測的 transcript schema —— 改 parser 前先讀這份
 docs/plan.md         當初的設計計畫與取捨紀錄
 index.db             索引產物（.gitignore），隨時可由 ~/.claude 重建

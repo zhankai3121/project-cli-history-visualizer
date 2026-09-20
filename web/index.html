@@ -85,7 +85,10 @@ main{padding:.7em .85em 1.2em}
   background:var(--card-bg); cursor:pointer; font-size:.8rem; color:var(--dim);
 }
 .chip[aria-pressed="true"]{background:var(--accent); border-color:var(--accent); color:var(--on-accent)}
-.grid{display:grid; gap:.6em; grid-template-columns:repeat(auto-fill,minmax(20rem,1fr))}
+/* min() 是關鍵：沒有它，20rem 的軌道在窄螢幕會直接撐出橫向捲軸 */
+.grid{display:grid; gap:.6em;
+      grid-template-columns:repeat(auto-fill,minmax(min(20rem,100%),1fr))}
+.grid > *{min-width:0}
 .grouped{display:flex; flex-direction:column; gap:1.1em}
 .fgroup > summary{
   cursor:pointer; list-style:none; padding:.3em .1em; margin-bottom:.5em;
@@ -139,9 +142,10 @@ main{padding:.7em .85em 1.2em}
 .turn{border-left:2px solid var(--line); padding:.1em 0 .7em .6em; margin-left:.15em}
 .turn.err{border-left-color:var(--flag)}
 .you{background:var(--bg); border-radius:.34em; padding:.45em .55em; white-space:pre-wrap;
-     font-size:.85rem; border:1px solid var(--line)}
+     font-size:.85rem; border:1px solid var(--line); overflow-wrap:anywhere}
 .you.slash{color:var(--dim); font-size:.7rem}
-.said{color:var(--dim); font-size:.74rem; margin-top:.35em; white-space:pre-wrap}
+.said{color:var(--dim); font-size:.74rem; margin-top:.35em; white-space:pre-wrap;
+      overflow-wrap:anywhere}
 .tags{display:flex; gap:.25em; flex-wrap:wrap; margin-top:.35em}
 .tag{font-size:.62rem; background:var(--bg); border:1px solid var(--line);
      border-radius:.25em; padding:.1em .35em; color:var(--dim)}
@@ -157,7 +161,8 @@ h3:first-child{margin-top:0}
 .cell:hover{outline:2px solid var(--accent)}
 .hit{background:var(--card-bg); border:var(--border-w) solid var(--line);
      border-radius:var(--radius); backdrop-filter:var(--blur);
-     padding:.5em .6em; margin-bottom:.35em; cursor:pointer; font-size:.85rem}
+     padding:.5em .6em; margin-bottom:.35em; cursor:pointer; font-size:.85rem;
+     overflow-wrap:anywhere}
 .hit:hover{border-color:var(--accent)}
 .hit.reply{border-left:3px solid var(--dim)}
 .hit .w{font-size:.64rem; color:var(--dim); margin-bottom:.2em}
@@ -377,6 +382,61 @@ kbd{font:.58rem/1 ui-monospace,monospace; border:1px solid var(--line); border-b
                  0 20px 60px -20px rgba(0,0,0,.85);
   --title-transform:uppercase; --title-spacing:.28em;
   --page-bg:linear-gradient(180deg,#05071a 0%,#0b1030 52%,#1a2352 100%);
+}
+
+/* ── RWD ───────────────────────────────────────────────────────────────
+   放在最後：這裡只改版面，主題區塊只改變數，兩邊不會打架。
+   --fs 是行內樣式時（使用者按過 A+/A-）會蓋過這裡的預設，這是對的 ——
+   而且 localStorage 每個瀏覽器各自獨立，手機第一次來還是吃預設值。 */
+
+@media (max-width: 1100px){
+  .split{grid-template-columns:minmax(12rem,32%) 1fr}
+}
+
+@media (max-width: 900px){
+  :root{ --fs:20px; }
+  main{padding:.6em .7em 1.2em}
+  /* 左右欄改上下堆疊 —— 兩欄各自的 78vh 疊起來會變成 156vh */
+  .split{grid-template-columns:1fr; gap:.7em}
+  .list{max-height:38vh}
+  .pane{max-height:none}
+  .card h2{flex-wrap:wrap}
+  .card h2 em{white-space:normal}
+}
+
+@media (max-width: 640px){
+  :root{ --fs:18px; }
+  header{padding:.5em .6em; gap:.3em}
+  input#q{order:10; flex-basis:100%; min-width:0}   /* 搜尋框獨占一行 */
+  h1 small{display:none}
+  main{padding:.5em .55em 1.2em}
+  .grid{gap:.5em}
+  .fgroup > summary .path{display:none}
+  .sheet{width:100%; max-height:92vh; padding:.7em}
+  .manualrow{flex-wrap:wrap}
+  .manualrow input{flex-basis:100%}
+  .rows{grid-template-columns:1fr; gap:.1em}
+  .rows b{font-size:.8em}
+}
+
+@media (max-width: 420px){
+  :root{ --fs:17px; }
+  .chips{gap:.25em}
+  .chip{padding:.28em .55em}
+  .turn{padding-left:.4em; margin-left:0}
+}
+
+/* 觸控：點擊區拉大，熱度圖格子也放大到點得到 */
+@media (pointer: coarse){
+  .chip, .actions button, .scopebar button{padding-top:.45em; padding-bottom:.45em}
+  .dirs button{padding-top:.5em; padding-bottom:.5em}
+  .cell{width:.8em; height:.8em}
+  .heatgrid{grid-template-rows:repeat(7,.8em)}
+}
+
+@media (prefers-reduced-motion: reduce){
+  .card{transition:none}
+  :root[data-skin="atomic"] .card:hover{transform:none}
 }
 </style>
 </head>
