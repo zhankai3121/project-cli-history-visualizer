@@ -152,6 +152,22 @@ def test_中文子目錄不會因為_slug_撞名而合併(fake_home):
         assert str(work / name) in paths, f"{name} 被合併掉了"
 
 
+def test_run_讀游標前就持有寫鎖(indexed, monkeypatch):
+    """兩個 run() 同時跑時，後到的必須等前者 commit 才讀 scan_state，
+    否則 turn / file_touch（無 UNIQUE）會插成兩份。守法：每段管線
+    進入時已經在 BEGIN IMMEDIATE 的交易裡。"""
+    seen = []
+    real = indexer.index_transcript
+
+    def spy(con, resolver, path):
+        seen.append(con.in_transaction)
+        return real(con, resolver, path)
+
+    monkeypatch.setattr(indexer, "index_transcript", spy)
+    indexer.run(full=False)
+    assert seen and all(seen)
+
+
 def test_watch_跑到_max_runs_就停(indexed):
     assert indexer.watch(interval=0, max_runs=2) == 2
 

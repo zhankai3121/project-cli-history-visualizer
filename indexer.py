@@ -975,6 +975,12 @@ def run(full=False, force_git=False):
 
     started = time.time()
     con = connect()
+    # 兩個 run() 同時跑（背景 --watch + 網頁 ↻）時，各自在 autocommit 下讀完
+    # scan_state 游標才寫入，turn / file_touch 沒有 UNIQUE，會插成兩份。
+    # 所以每段管線在讀游標之前就用 BEGIN IMMEDIATE 搶寫鎖，後到的等前者
+    # commit 才讀，讀到的就是更新後的游標。整段索引可能超過 5 秒，等久一點。
+    con.execute("PRAGMA busy_timeout = 30000")
+    con.execute("BEGIN IMMEDIATE")
     for key, value in saved_config.items():
         con.execute("INSERT OR REPLACE INTO app_config(key, value) VALUES (?, ?)",
                     (key, value))
@@ -983,18 +989,22 @@ def run(full=False, force_git=False):
     prompts = index_history(con, resolver)
     con.commit()
 
+    con.execute("BEGIN IMMEDIATE")
     turns = 0
     transcripts = sorted(PROJECTS.glob("*/*.jsonl")) if PROJECTS.exists() else []
     for path in transcripts:
         turns += index_transcript(con, resolver, path)
     con.commit()
 
+    con.execute("BEGIN IMMEDIATE")
     agents, agent_edits = index_subagents(con, resolver)
     con.commit()
 
+    con.execute("BEGIN IMMEDIATE")
     cx_prompts, cx_turns, cx_files = index_codex(con, resolver)
     con.commit()
 
+    con.execute("BEGIN IMMEDIATE")
     memories = index_memory_files(con, resolver)
     scanned, orphans = scan_project_dirs(con, resolver)
     appeared, vanished = sync_disk_projects(con)
@@ -1085,7 +1095,7 @@ def main(argv=None):
         ap.error("--watch 不能和 --full 一起用；要重建請先關掉 watcher 與 server")
     if args.watch:
         # --max-runs 是測試用的暗門，真的常駐時才強制最小間隔
-        interval = args.interval if args.max_runs is not None else max(args.interval, 30)
+        interval = max(args.interval, 0) if args.max_runs is not None else max(args.interval, 30)
         watch(interval=interval, force_git=args.force_git, max_runs=args.max_runs)
     else:
         run(full=args.full, force_git=args.force_git)
