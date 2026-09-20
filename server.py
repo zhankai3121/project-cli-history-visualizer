@@ -761,6 +761,11 @@ def mismatch(con, project_id, real_path=None, now=None):
     ref_day = (_iso_day(now) or latest_day) if now else latest_day
     origin = sig["origin"] or "手寫進度檔"
 
+    # 進度檔寫在最後一次改檔之後 -> 那是「剛寫好的計畫」，實作還沒開始往前走，
+    # 談不上被留在原地。沒有這道閘門，剛寫的 brain.md 提到舊檔就會立刻被標紅。
+    if memory_day >= latest_day:
+        return None
+
     # 1) 進度檔還在講、實作卻早就放著沒動的檔案
     if sig["goal"] or sig["next_step"]:
         cold = []

@@ -247,3 +247,5 @@ def test_memory_paths_忽略沒有副檔名的字():
     assert P.memory_paths("") == set()
     # 指令裡的路徑要抽得出來，但整句指令本身不能變成候選
     assert P.memory_paths("`pytest tests/test_api.py -q`") == {"tests/test_api.py"}
+    # x.py.bak 不能被切成 x.py（否則專案碰過 x.py 就誤報）
+    assert P.memory_paths("留著 old.py.bak 備份") == set()

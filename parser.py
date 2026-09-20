@@ -276,7 +276,8 @@ def parse_memory_markdown(text):
 
 
 _PATH_EXT = "py|js|ts|tsx|html|css|md|sql|json|toml|yaml|yml|sh|ps1"
-_PATH_TOKEN = re.compile(rf"[\w\-./\\~]+\.(?:{_PATH_EXT})\b", re.I)
+# 結尾不用 \b：x.py.bak 會被 \b 切成 x.py，專案若碰過 x.py 就誤報
+_PATH_TOKEN = re.compile(rf"[\w\-./\\~]+\.(?:{_PATH_EXT})(?![\w.])", re.I)
 _BACKTICK = re.compile(r"`([^`\n]+)`")
 _ENDS_EXT = re.compile(rf"\.(?:{_PATH_EXT})$", re.I)
 

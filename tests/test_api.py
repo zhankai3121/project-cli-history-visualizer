@@ -427,6 +427,20 @@ def test_mismatch_手寫落後實作(client):
     assert flag["files"] == [], "整份過期時沒有特定檔案可指"
 
 
+def test_memory_比所有改檔都新_不算不符(client):
+    """剛寫好的 brain.md 提到很久沒動的檔 —— 那是計畫，不是「寫了沒做」。"""
+    import sqlite3
+
+    p = alpha_proj(client)
+    advance_clock(p["id"], p["real_path"])      # config.py 落後 54 天，規則一本來會報
+    con = sqlite3.connect(indexer.DB_PATH)
+    con.execute("UPDATE progress_signal SET ts = '2026-10-30T00:00:00+00:00' "
+                "WHERE project_id = ? AND kind = 'memory_file'", (p["id"],))
+    con.commit()
+    con.close()
+    assert alpha_proj(client)["mismatch"] is None
+
+
 def test_memory_跟上就沒有旗標(client):
     """brain.md 講的就是最近在改的檔，時間也沒落後 —— 一個旗標都不該有。"""
     ps = client.get("/api/overview?include_containers=true").json()["projects"]
