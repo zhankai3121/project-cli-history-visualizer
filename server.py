@@ -492,9 +492,16 @@ from fastapi import Response
 @app.get("/api/session/{session_id}/export.md")
 def session_export(session_id: str):
     """整份 session 的 Markdown，給交接文件用。404 沿用 session_detail。"""
-    md = export.session_markdown(session_detail(session_id))
+    payload = session_detail(session_id)
+    con = db()
+    proj = con.execute("SELECT real_path FROM project WHERE id = ?",
+                       (payload["session"].get("project_id"),)).fetchone()
+    con.close()
+    payload["project"] = dict(proj) if proj else None
+    md = export.session_markdown(payload)
     # 檔名只用 id 前 8 碼且濾成 ASCII：Content-Disposition 非 ASCII 會炸
-    stem = "".join(c for c in session_id[:8] if c.isalnum() or c in "-_") or "session"
+    stem = "".join(c for c in session_id[:8]
+                   if c.isascii() and (c.isalnum() or c in "-_")) or "session"
     return Response(
         content=md,
         media_type="text/markdown; charset=utf-8",

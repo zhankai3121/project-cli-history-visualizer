@@ -26,7 +26,9 @@ def session_markdown(payload: dict) -> str:
     lines += _commands(payload.get("commands") or [])
     lines += _talk(payload.get("prompts") or [], payload.get("turns") or [])
     lines += _agents(payload.get("subagents") or [])
-    return "\n".join(lines).rstrip("\n") + "\n"
+    # Windows 貼上的 prompt 帶 \r\n，indexer 不正規化；這裡統一成 \n
+    text = "\n".join(lines).replace("\r\n", "\n").replace("\r", "\n")
+    return text.rstrip("\n") + "\n"
 
 
 def _meta(payload, sess, sid):

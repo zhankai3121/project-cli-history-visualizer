@@ -8,6 +8,8 @@ def test_匯出含_prompt_commit_與檔案(client):
     assert "第一個問題" in md
     assert "feat: 加上設定" in md
     assert "config.py" in md
+    assert "- 專案：`" in md          # real_path 由端點注入，session_detail 本身沒有
+    assert "\r" not in md
 
     # 段落順序照 plan-v2：進度訊號 → Commits → 改過的檔案 → 指令 → 對話
     heads = [ln for ln in md.split("\n") if ln.startswith("## ")]
