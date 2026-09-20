@@ -48,7 +48,7 @@ CREATE TABLE IF NOT EXISTS session (
     title            TEXT,
     transcript_state TEXT NOT NULL DEFAULT 'gone',   -- live | gone
     transcript_path  TEXT,
-    tool             TEXT NOT NULL DEFAULT 'claude'  -- claude | codex
+    tool             TEXT NOT NULL DEFAULT 'claude'  -- claude | codex | gemini
 );
 
 CREATE TABLE IF NOT EXISTS prompt (
@@ -61,7 +61,7 @@ CREATE TABLE IF NOT EXISTS prompt (
     is_slash   INTEGER NOT NULL DEFAULT 0,
     source     TEXT NOT NULL,                        -- history | transcript
     pasted     TEXT,
-    tool       TEXT NOT NULL DEFAULT 'claude',       -- claude | codex
+    tool       TEXT NOT NULL DEFAULT 'claude',       -- claude | codex | gemini
     UNIQUE(session_id, ts, text)
 );
 CREATE INDEX IF NOT EXISTS ix_prompt_project ON prompt(project_id, ts);

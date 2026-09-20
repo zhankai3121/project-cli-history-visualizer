@@ -256,9 +256,10 @@ python cli.py recent [--limit 30]
 |---|---|---|
 | **Claude Code** | `~/.claude/history.jsonl` + `~/.claude/projects/<slug>/*.jsonl` | 一律啟用 |
 | **OpenAI Codex** | `~/.codex/history.jsonl` + `~/.codex/sessions/<YYYY>/<MM>/<DD>/rollout-*.jsonl` | 有 `sessions/` 或 `history.jsonl` 才啟用；沒裝就整段跳過 |
+| **Gemini CLI** | `~/.gemini/tmp/<slug>/chats/*.jsonl`（專案路徑在同層的 `.project_root`） | 有 `~/.gemini/tmp/` 才啟用；沒裝就整段跳過 |
 
-`CODEX_HOME` 環境變數可以改 Codex 的家目錄。兩邊的 prompt 與 session 都帶 `tool`
-欄位分開標記，卡片與 session 列會顯示來源。
+`CODEX_HOME` / `GEMINI_CLI_HOME` 環境變數可以改對應 CLI 的家目錄。三邊的 prompt 與
+session 都帶 `tool` 欄位分開標記，卡片與 session 列會顯示來源。
 
 ### Codex 格式的兩個關鍵事實
 
@@ -279,6 +280,26 @@ python cli.py recent [--limit 30]
 rollout 已經不在的 session 仍然留得住 prompt，只是沒有專案歸屬。
 
 順帶一提，Codex 的 `session_meta` 自帶 `git: {branch, commit}`，比 Claude 那邊多這層資訊。
+
+### Gemini CLI 格式的兩個陷阱
+
+實測 schema 與逐字樣本在 [docs/gemini-schema.md](docs/gemini-schema.md)（`@google/gemini-cli`
+0.44.1）。動 `gemini.py` 之前先讀那一份，尤其是「NOT OBSERVED 清單」—— 本機勘查時
+沒有認證，模型回覆與工具呼叫一則都沒看過，那些欄位只能防禦性解析。
+
+**1. 第一則 `type=="user"` 是 CLI 注入的 `<session_context>`，不是真人。**
+
+開場白裡包著整棵專案目錄樹，`type` 卻也是 `"user"`。光看 `type` 會把環境資訊當成
+使用者 prompt 灌進資料庫 —— 跟 Codex 的 `role=="user"` 是同一類陷阱。判別式擋兩層：
+固定的 `id`（`sha256("environment-context")[:32]`）與 `<session_context>` 文字前綴，
+換版本換掉其中一個還擋得住。
+
+**2. 檔案是 append-only，但不能只讀新行。**
+
+`$set.messages` 會清空訊息表整批重設、`$rewindTo` 會砍掉尾巴，所以 mtime/size 一變就
+**整檔從頭重播**，並先 `DELETE` 該 session 已經寫進去的列再重插；游標只拿來判斷「有沒有變」。
+另外 `--resume` 會留下只有檔頭的孤兒檔，而且和本尊**共用同一個 `sessionId`** ——
+資料庫的 key 因此是 `sessionId` + 檔案路徑的短雜湊，不能只用 `sessionId`。
 
 ### 專案清單的來源
 
@@ -400,6 +421,7 @@ server.py            FastAPI，port 8787
 indexer.py           掃 ~/.claude -> SQLite（增量，靠 mtime/size/offset）
 parser.py            Claude Code 的 JSONL / Markdown 判別式（規格見 docs/jsonl-schema.md）
 codex.py             OpenAI Codex 的 rollout / history 解析
+gemini.py            Gemini CLI 的 chats 解析（規格見 docs/gemini-schema.md）
 schema.sql           資料表與 FTS5 定義
 web/index.html       單檔前端，無 build step，零外部依賴
 tests/               pytest（86 個）—— 用合成資料，不碰真實的 ~/.claude

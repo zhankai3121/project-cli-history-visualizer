@@ -41,6 +41,7 @@ def assistant(text, tools=(), ts="2026-09-01T10:00:05.000Z"):
 @pytest.fixture
 def fake_home(tmp_path, monkeypatch):
     """建一個假的 ~/.claude，並把 indexer 的所有路徑常數指過去。"""
+    import gemini
     import indexer
 
     claude = tmp_path / ".claude"
@@ -80,8 +81,11 @@ def fake_home(tmp_path, monkeypatch):
     monkeypatch.setattr(indexer, "DB_PATH", tmp_path / "index.db")
     monkeypatch.setattr(indexer, "BACKUP_DIR", tmp_path / "backup")
     monkeypatch.setattr(indexer, "DEFAULT_ROOT", work)
+    # 真實的 ~/.gemini 可能有資料，indexer.run() 會掃到它 —— 一律指到 tmp_path
+    # 底下（預設不存在＝沒裝）。要測 Gemini 的自己在這個路徑建樹。
+    monkeypatch.setattr(gemini, "GEMINI_HOME", tmp_path / ".gemini")
     return {"claude": claude, "projects": projects, "work": work,
-            "db": tmp_path / "index.db"}
+            "gemini": tmp_path / ".gemini", "db": tmp_path / "index.db"}
 
 
 @pytest.fixture
