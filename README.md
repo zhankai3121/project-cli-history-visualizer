@@ -373,6 +373,9 @@ turn(session_id, prompt_id, ts, assistant_summary, tools_json, has_error)
 file_touch(session_id, project_id, ts, path, verb)
 command_run(session_id, project_id, ts, command, kind)
 commit_ref(session_id, project_id, ts, message)
+api_call(session_id, project_id, ts, request_id UNIQUE, model, input_tokens,
+         cache_create_tokens, cache_read_tokens, output_tokens, thinking_tokens)
+                                               -- 一次呼叫拆成多行 assistant，靠 request_id 去重
 progress_signal(session_id, project_id, ts, kind, goal, state, next_step, body, origin)
 scan_state(path PK, mtime, size, last_offset)  -- 增量索引游標
 ```
@@ -396,7 +399,8 @@ jsonl 是 append-only，所以 `scan_state` 記錄每個檔案的 `(mtime, size,
 | `GET /api/session/{id}` | prompt / turn / 改檔 / 指令 / commit / 進度訊號 |
 | `GET /api/search?q=&limit=` | 全文搜尋（FTS5，短查詢自動退回 LIKE） |
 | `GET /api/recent?limit=` | 跨專案最近動態 |
-| `GET /api/heatmap` | 每日 prompt 數 |
+| `GET /api/heatmap?metric=prompts\|tokens` | 每日 prompt 數；`tokens` 改回每日 token（熱度只算 input+cache_create+output，另附 `out` / `cache_read`） |
+| `GET /api/project/{id}/tokens` | 該專案的 token 用量：總量、模型分佈、每日曲線、子代理佔比 |
 | `GET /api/day/{YYYY-MM-DD}` | 某一天的所有 prompt |
 | `POST /api/reindex` | 增量重新索引 |
 

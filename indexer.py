@@ -109,6 +109,8 @@ def migrate(con):
         "progress_signal": [("state", "TEXT")],
         "session": [("tool", "TEXT NOT NULL DEFAULT 'claude'")],
         "prompt": [("tool", "TEXT NOT NULL DEFAULT 'claude'")],
+        "subagent": [("cache_create_tokens", "INTEGER"),
+                     ("cache_read_tokens", "INTEGER")],
     }
     for table, columns in wanted.items():
         have = {r["name"] for r in con.execute(f"PRAGMA table_info({table})")}
@@ -283,6 +285,7 @@ def index_transcript(con, resolver, path):
                 )
                 turns += 1
                 pending_error = False
+            _record_usage(con, session_id, project_id, ts, rec)
             for name, params in P.tool_uses(rec):
                 _record_tool(con, session_id, project_id, ts, name, params)
 
@@ -349,6 +352,62 @@ def _record_tool(con, session_id, project_id, ts, name, params):
                 con.execute(
                     "INSERT INTO commit_ref(session_id, project_id, ts, message) "
                     "VALUES (?,?,?,?)", (session_id, project_id, ts, message[:500]))
+
+
+# 一次 API 呼叫會被拆成好幾行 assistant（text 一行、tool_use 一行），usage 完全
+# 相同 —— 本機 3867 行只對應 1621 個 requestId，不去重會高估 2.4 倍。
+# model="<synthetic>" 是 CLI 自己合成的錯誤訊息，沒有真的呼叫過 API。
+SYNTHETIC_MODEL = "<synthetic>"
+
+
+def _record_usage(con, session_id, project_id, ts, rec):
+    message = rec.get("message") or {}
+    usage = message.get("usage")
+    if not isinstance(usage, dict) or message.get("model") == SYNTHETIC_MODEL:
+        return
+    request_id = rec.get("requestId") or rec.get("uuid")
+    if not request_id:
+        return
+    details = usage.get("output_tokens_details")
+    thinking = details.get("thinking_tokens") if isinstance(details, dict) else None
+    con.execute(
+        "INSERT OR IGNORE INTO api_call(session_id, project_id, ts, request_id, model, "
+        "input_tokens, cache_create_tokens, cache_read_tokens, output_tokens, "
+        "thinking_tokens) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (session_id, project_id, ts, request_id, message.get("model"),
+         usage.get("input_tokens") or 0,
+         usage.get("cache_creation_input_tokens") or 0,
+         usage.get("cache_read_input_tokens") or 0,
+         usage.get("output_tokens") or 0,
+         thinking or 0),
+    )
+
+
+def backfill_usage(con):
+    """舊 DB 的 transcript 早就讀到檔尾，api_call 卻是空的。
+
+    清 scan_state 會讓 turn / file_touch 重複插入（它們沒有 UNIQUE），所以改成
+    一次性重讀每個 transcript 的 assistant 行，只寫 api_call（有 UNIQUE 擋重複）。
+    """
+    if con.execute("SELECT 1 FROM app_config WHERE key = 'usage_backfilled'").fetchone():
+        return 0
+    sessions = con.execute(
+        "SELECT id, project_id, transcript_path FROM session "
+        "WHERE tool = 'claude' AND transcript_path IS NOT NULL").fetchall()
+    added = 0
+    for row in sessions:
+        path = Path(row["transcript_path"])
+        if not path.is_file():
+            continue
+        for _, rec in P.iter_jsonl(path, 0):
+            if rec.get("type") != "assistant" or rec.get("isSidechain"):
+                continue
+            before = con.total_changes
+            _record_usage(con, row["id"], row["project_id"], rec.get("timestamp"), rec)
+            added += con.total_changes - before
+    con.execute(
+        "INSERT OR REPLACE INTO app_config(key, value) VALUES ('usage_backfilled', '1')")
+    return added
 
 
 def _signal(con, session_id, project_id, ts, kind, goal, nxt, body, origin, state=None):
@@ -426,7 +485,8 @@ def index_subagent(con, resolver, path, session_id, project_id):
     first_ts = last_ts = last_text = None
     turns = tools = 0
     files, commands = [], []
-    tok_in = tok_out = 0
+    tok_in = tok_out = tok_cc = tok_cr = 0
+    seen_requests = set()
     offset = 0
 
     for new_offset, rec in P.iter_jsonl(path, 0):
@@ -442,8 +502,13 @@ def index_subagent(con, resolver, path, session_id, project_id):
         if text:
             last_text = text
         usage = rec.get("message", {}).get("usage") or {}
-        tok_in += usage.get("input_tokens") or 0
-        tok_out += usage.get("output_tokens") or 0
+        request_id = rec.get("requestId") or rec.get("uuid")
+        if usage and request_id not in seen_requests:   # 同一呼叫會拆成數行
+            seen_requests.add(request_id)
+            tok_in += usage.get("input_tokens") or 0
+            tok_out += usage.get("output_tokens") or 0
+            tok_cc += usage.get("cache_creation_input_tokens") or 0
+            tok_cr += usage.get("cache_read_input_tokens") or 0
         for name, params in P.tool_uses(rec):
             tools += 1
             if name in P.EDIT_TOOLS:
@@ -459,18 +524,22 @@ def index_subagent(con, resolver, path, session_id, project_id):
         INSERT INTO subagent(agent_id, session_id, project_id, parent_agent_id,
             agent_type, description, model, tool_use_id, spawn_depth, request_shape,
             workflow_phase, started_at, ended_at, turn_count, tool_count, file_count,
-            input_tokens, output_tokens, result, path)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            input_tokens, output_tokens, cache_create_tokens, cache_read_tokens,
+            result, path)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(agent_id) DO UPDATE SET
             ended_at=excluded.ended_at, turn_count=excluded.turn_count,
             tool_count=excluded.tool_count, file_count=excluded.file_count,
             input_tokens=excluded.input_tokens, output_tokens=excluded.output_tokens,
+            cache_create_tokens=excluded.cache_create_tokens,
+            cache_read_tokens=excluded.cache_read_tokens,
             result=excluded.result
     """, (agent_id, session_id, project_id, meta.get("parentAgentId"),
           meta.get("agentType"), meta.get("description"), meta.get("model"),
           meta.get("toolUseId"), meta.get("spawnDepth"), meta.get("requestShape"),
           meta.get("workflowPhase"), first_ts, last_ts, turns, tools,
           len({f[1] for f in files}), tok_in or None, tok_out or None,
+          tok_cc or None, tok_cr or None,
           (last_text or "")[:8000] or None, str(path)))
 
     # 子代理的產出併進主線的統計，但標記來源，需要時分得開
@@ -979,6 +1048,7 @@ def run(full=False, force_git=False):
     transcripts = sorted(PROJECTS.glob("*/*.jsonl")) if PROJECTS.exists() else []
     for path in transcripts:
         turns += index_transcript(con, resolver, path)
+    backfill_usage(con)          # 舊 DB 的 transcript 已讀完，api_call 還是空的
     con.commit()
 
     agents, agent_edits = index_subagents(con, resolver)
