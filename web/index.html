@@ -265,6 +265,11 @@ kbd{font:.58rem/1 ui-monospace,monospace; border:1px solid var(--line); border-b
 
 
 /* @F2-css */
+.filepanel{margin:0 0 .6em}
+.filepanel summary{cursor:pointer; color:var(--dim); font-size:.72rem}
+.filepanel #filesess{display:flex; flex-direction:column; gap:.35em; margin-top:.5em}
+.filepanel .tag{overflow-wrap:anywhere; text-align:left}
+.tag[aria-pressed="true"]{border-color:var(--accent); color:var(--ink)}
 
 
 /* @F3-css */
@@ -827,6 +832,11 @@ async function openProject(id, focusSession) {
       ${project.is_git ? `<button data-act="branch">⎇ ${esc(project.git_branch || "?")}
         · ${project.git_dirty ? project.git_dirty + " 個未提交" : "工作區乾淨"}</button>` : ""}
     </div>
+    <details id="filepanel" class="filepanel">
+      <summary>改過的檔案 <span id="filecount"></span></summary>
+      <div class="tags" id="filelist"></div>
+      <div id="filesess"></div>
+    </details>
     <div class="split">
       <div class="list">${sessions.map(sessionRow).join("") || '<p class="empty">無 session</p>'}</div>
       <div class="pane" id="sesspane"><p class="empty">選一個 session</p></div>
@@ -843,6 +853,7 @@ async function openProject(id, focusSession) {
   };
   watchScroll($("#detail .list"));
   loadModels(id);
+  loadFiles(id);
   if (sessions.length) openSession(focusSession || sessions[0].id);
 }
 
@@ -1065,6 +1076,40 @@ async function loadModels(id) {
 
 
 /* @F2-js */
+/* ── 檔案檢視 ─────────────────────────────────────────────────── */
+// 「這個檔被改過幾次」→「是哪幾個 session 改的」→ 點進去看那段對話。
+async function loadFiles(id) {
+  const list = $("#filelist");
+  if (!list) return;
+  const { files } = await api(`/api/project/${id}/files`);
+  $("#filecount").textContent = files.length ? `(${files.length})` : "";
+  list.innerHTML = files.map(f =>
+    `<button class="tag" data-path="${esc(f.path)}" aria-pressed="false"
+      title="${esc(f.path)}">${esc(f.rel)} ×${f.n}</button>`).join("")
+    || '<p class="empty">沒有改檔紀錄</p>';
+  list.onclick = e => {
+    const el = e.target.closest(".tag");
+    if (el) loadFileSessions(id, el);
+  };
+  $("#filesess").onclick = e => {
+    const row = e.target.closest(".sess");
+    if (row) openSession(row.dataset.id);
+  };
+}
+
+async function loadFileSessions(id, el) {
+  document.querySelectorAll("#filelist .tag").forEach(t =>
+    t.setAttribute("aria-pressed", t === el));
+  const { sessions } = await api(`/api/project/${id}/file?path=` +
+    encodeURIComponent(el.dataset.path));      // 路徑含反斜線，一定要編碼
+  $("#filesess").innerHTML = sessions.length ? sessions.map(s => `
+    <div class="sess" data-id="${esc(s.id)}">
+      <div class="t">${esc(s.title || "（無標題）")}</div>
+      <div class="m">${date(s.started_at)} · 改 ${s.n} 次${
+        s.verbs ? " · " + esc(s.verbs) : ""}${
+        s.via_agent_n ? ` · 子代理 ${s.via_agent_n} 次` : ""}</div>
+    </div>`).join("") : '<p class="empty">沒有 session 改過這個檔</p>';
+}
 
 
 /* @F3-js */
