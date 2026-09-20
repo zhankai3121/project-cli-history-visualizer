@@ -53,6 +53,9 @@
 :root{
   --fs-scale:1;
   --fs:calc(clamp(17px, 0.657vw + 14.54px, 24px) * var(--fs-scale));
+  /* main 的左右內距。黏住的次要工具列要靠負 margin 出血到邊緣，
+     兩邊必須同一個值，不然斷點一換就對不齊 */
+  --main-pad:.85em;
 }
 html{font-size:var(--fs)}
 
@@ -84,8 +87,20 @@ select{font-size:.8rem}
 button{cursor:pointer}
 button:hover{border-color:var(--accent)}
 #fsdec,#fsinc,#theme,#reindex{font-size:.78rem; padding:.3em .6em; line-height:1.2}
-main{padding:.7em .85em 1.2em}
-.chips{display:flex; gap:.35em; flex-wrap:wrap; margin-bottom:.6em}
+main{padding:.7em var(--main-pad) 1.2em}
+/* header 底下的次要工具列（篩選 chip、回總覽、搜尋範圍）也黏住，
+   往下滾時還按得到。--head-h 由 JS 量出來 —— header 會隨視窗寬度換行，
+   高度不是固定值。 */
+.subbar, .chips, .scopebar{
+  position:sticky; top:var(--head-h, 3.2em); z-index:9;
+  background:var(--panel); border-bottom:1px solid var(--line);
+  margin:0 calc(-1 * var(--main-pad)) .6em;
+  padding:.45em var(--main-pad);
+  display:flex; gap:.4em; align-items:center; flex-wrap:wrap;
+}
+.subbar{align-items:baseline}
+.subbar .here{font-size:.85rem; font-weight:600; min-width:0;
+              overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
 .chip{
   padding:.3em .66em; border:var(--border-w) solid var(--line); border-radius:var(--chip-radius);
   background:var(--card-bg); cursor:pointer; font-size:.8rem; color:var(--dim);
@@ -132,8 +147,9 @@ main{padding:.7em .85em 1.2em}
 .flag{color:var(--flag)}
 .src{font-size:.62rem; color:var(--dim); opacity:.85}
 .empty{color:var(--dim); font-style:italic}
-.back{background:none; border:none; color:var(--accent); padding:0; margin-bottom:.5em;
-      font-size:.8rem}
+.back{background:none; border:none; color:var(--accent); padding:.1em .3em;
+      font-size:.8rem; border-radius:.3em; cursor:pointer}
+.back:hover{background:var(--bg)}
 /* flex-wrap 讓側欄在放不下時自己換行，不需要斷點。兩邊的 flex-basis 加起來
    約 42rem，所以大概在 870px 左右自然塌成上下堆疊。 */
 .split{display:flex; flex-wrap:wrap; gap:.8em; align-items:flex-start}
@@ -188,7 +204,6 @@ h3:first-child{margin-top:0}
 .agent > summary b{font-size:.78rem; font-weight:600}
 .agent .said{margin-top:.5em; max-height:22em; overflow:auto}
 .hit .w{font-size:.64rem; color:var(--dim); margin-bottom:.2em}
-.scopebar{display:flex; gap:.35em; align-items:center; margin:.45em 0}
 .scopebar button{font-size:.7rem; padding:.25em .7em; border-radius:999px}
 .scopebar button[aria-pressed="true"]{background:var(--accent);
   border-color:var(--accent); color:var(--on-accent)}
@@ -417,7 +432,7 @@ kbd{font:.58rem/1 ui-monospace,monospace; border:1px solid var(--line); border-b
    剩下的是真的沒辦法用內建機制表達的：高度是視窗相關的，堆疊之後兩個
    78vh 會變 156vh，這個只能靠斷點。 */
 @media (max-width: 900px){
-  main{padding:.6em .7em 1.2em}
+  :root{ --main-pad:.7em; }
   .list{max-height:38vh}
   .pane{max-height:none}
   .card h2 em{white-space:normal}
@@ -429,7 +444,10 @@ kbd{font:.58rem/1 ui-monospace,monospace; border:1px solid var(--line); border-b
      （WCAG 2.4.3）。#q 本來就是第二個子元素，撐滿一行自然會換行到第二列。 */
   input#q{flex-basis:100%; min-width:0}
   h1 small{display:none}
-  main{padding:.5em .55em 1.2em}
+  :root{ --main-pad:.55em; }
+  /* 黏住的工具列如果疊成三行會吃掉半個畫面，窄螢幕改成單行橫向捲動 */
+  .chips, .scopebar{flex-wrap:nowrap; overflow-x:auto; scrollbar-width:thin}
+  .chips > *, .scopebar > *{flex:0 0 auto}
   .grid{gap:.5em}
   .fgroup > summary .path{display:none}
   .sheet{width:100%; max-height:92vh; padding:.7em}
@@ -748,9 +766,11 @@ async function openProject(id, focusSession) {
   const { project, sessions } = await api("/api/project/" + id);
   show("detail");
   $("#detail").innerHTML = `
-    <button class="back">← 回總覽</button>
-    <h2 style="margin:0 0 4px">
-      <i class="dot ${project.light || "none"}" title="${esc(lightTitle(project))}"></i>${esc(project.display_name)}</h2>
+    <div class="subbar">
+      <button class="back">← 回總覽</button>
+      <span class="here"><i class="dot ${project.light || "none"}"
+        title="${esc(lightTitle(project))}"></i>${esc(project.display_name)}</span>
+    </div>
     <p class="note">${esc(project.real_path)}${project.exists_on_disk ? "" : " · 🗑 資料夾已不存在"}</p>
     <div class="actions">
       <button data-act="code">在 VS Code 開啟</button>
@@ -1121,6 +1141,17 @@ $("#theme").onclick = () => {
   document.documentElement.setAttribute("data-theme", next);
   try { localStorage.setItem("clihv-theme", next); } catch {}
 };
+
+/* header 會隨視窗寬度換行，高度不是固定值 —— 量出來給次要工具列當 sticky top。
+   字級改變（A±）與主題切換都會讓高度變，所以用 ResizeObserver 而不是只綁 resize。 */
+(() => {
+  const head = document.querySelector("header");
+  const sync = () => document.documentElement.style.setProperty(
+    "--head-h", head.getBoundingClientRect().height + "px");
+  if (window.ResizeObserver) new ResizeObserver(sync).observe(head);
+  else window.addEventListener("resize", sync);
+  sync();
+})();
 
 document.addEventListener("keydown", e => {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {

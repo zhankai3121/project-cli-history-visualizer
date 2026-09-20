@@ -210,6 +210,43 @@ def test_會出現長路徑的地方都能斷字():
             f"{sel} 少了斷字規則，長路徑會撐破版面"
 
 
+def test_次要工具列黏在_header_下方():
+    """chips / 回總覽 / 搜尋範圍往下滾時要還按得到。"""
+    for sel in (".chips", ".scopebar", ".subbar"):
+        block = None
+        for m in re.finditer(r"([^{}]+)\{([^}]*)\}", CSS):
+            if sel in m.group(1) and "position:sticky" in m.group(2):
+                block = dict(decls(m.group(2)))
+                break
+        assert block, f"{sel} 沒有 position:sticky"
+        assert "var(--head-h" in block.get("top", ""), \
+            f"{sel} 的 top 沒有吃 --head-h，header 換行後會錯位"
+        assert block.get("background"), f"{sel} 沒有背景，捲動時內容會透出來"
+
+
+def test_head_h_由_js_量出來():
+    """header 會隨視窗寬度換行，高度寫死一定會錯。"""
+    assert re.search(r'setProperty\(\s*["\']--head-h["\']', RAW_JS), \
+        "JS 沒有實際設定 --head-h"
+    assert re.search(r"new\s+ResizeObserver\([^)]*\)\s*\.observe\(", RAW_JS), \
+        "沒有真的掛上 ResizeObserver —— 字級或主題改變時高度不會重算"
+
+
+def test_黏住的列與_main_內距用同一個變數():
+    """負 margin 出血到邊緣，兩邊對不上的話斷點一換就會露出縫。"""
+    assert re.search(r"main\s*\{[^}]*padding:[^;}]*var\(--main-pad\)", CSS)
+    sticky = re.search(r"\.subbar[^{]*\{([^}]*position:sticky[^}]*)\}", CSS).group(1)
+    margin = dict(decls(sticky)).get("margin", "")
+    assert "var(--main-pad)" in margin, \
+        f"黏住的列的 margin 沒有吃 --main-pad，斷點一換就對不齊: {margin!r}"
+
+
+def test_sticky_層級低於_header():
+    head_z = int(re.search(r"header\s*\{[^}]*z-index:\s*(\d+)", CSS).group(1))
+    sub_z = int(re.search(r"\.subbar[^{]*\{[^}]*z-index:\s*(\d+)", CSS).group(1))
+    assert sub_z < head_z, "次要工具列會蓋到 header"
+
+
 def test_不要用_order_打亂_tab_順序():
     """視覺順序與 DOM 順序不一致會讓鍵盤使用者跳來跳去（WCAG 2.4.3）。"""
     for prop, value in [d for m in re.finditer(r"\{([^}]*)\}", CSS)
