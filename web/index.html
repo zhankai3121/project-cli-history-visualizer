@@ -747,7 +747,7 @@ function passes(p) {
   if (f.has("flags") && !p.hotspots.length) return false;
   if (f.has("evap") && p.live_sessions > 0) return false;
   if (f.has("mismatch") && !p.mismatch) return false;
-  if (TAG && !p.tags.includes(TAG)) return false;
+  if (TAG && !(p.tags || []).includes(TAG)) return false;
   return true;
 }
 
@@ -849,7 +849,7 @@ function card(p) {
       ${p.hotspots.map(h => `<br><span class="flag">🚩 ${esc(h.path.split(/[\\/]/).pop())} 被改 ${h.n} 次</span>`).join("")}
       ${p.mismatch ? `<br><span class="flag">⚠ ${esc(p.mismatch.detail)}</span>` : ""}
       ${p.last_prompt ? `<br>最後「${esc(p.last_prompt.text.slice(0, 46))}」${date(p.last_prompt.ts)}` : ""}
-      ${p.tags.length ? `<br>${p.tags.map(t => `<span class="tag">${esc(t)}</span>`).join(" ")}` : ""}
+      ${(p.tags || []).length ? `<br>${p.tags.map(t => `<span class="tag">${esc(t)}</span>`).join(" ")}` : ""}
       ${p.note ? `<br><span class="src">📝 ${esc(p.note.split("\n")[0].slice(0, 60))}</span>` : ""}
       ${p.sources.length ? `<br><span class="src">來源 ${p.sources.map(esc).join(" · ")}</span>` : ""}
     </div>
@@ -1219,7 +1219,9 @@ let TAG = "";
 let META_ID = null;      // 目前在編輯哪個專案
 
 async function fillTagFilter() {
-  const { tags } = await api("/api/tags");
+  // 標籤清單抓不到（例如 server 還是舊版、還沒有這個端點）只是沒得篩，不該讓總覽掛掉
+  let tags;
+  try { ({ tags } = await api("/api/tags")); } catch { return; }
   // 選著的標籤被改掉／刪光時要放手，否則 grid 會永遠是空的
   if (TAG && !tags.some(t => t.tag === TAG)) TAG = "";
   // 用 Option 物件，不拼字串：esc() 不跳脫雙引號，標籤含 " 會把 value 截斷
