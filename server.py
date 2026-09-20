@@ -211,45 +211,81 @@ def session_detail(session_id: str):
 
 
 @app.get("/api/search")
-def search(q: str = Query(..., min_length=1), limit: int = 80):
-    """FTS5 trigram；2 字以下（或 FTS 撲空）自動退回 LIKE。
+def search(q: str = Query(..., min_length=1), limit: int = 80,
+           scope: str = "all"):
+    """搜尋 prompt 與 assistant 回覆。scope: all | prompt | reply
 
-    trigram 對 <3 字元的查詢是「靜默回 0 筆」而不是報錯，所以這個 fallback
-    不是最佳化，是正確性要求。
+    FTS5 trigram；2 字以下（或 FTS 撲空）自動退回 LIKE。trigram 對 <3 字元
+    的查詢是「靜默回 0 筆」而不是報錯，所以 fallback 不是最佳化，是正確性要求。
     """
     term = q.strip()
     con = db()
-    mode = "fts"
+    phrase = '"' + term.replace('"', '""') + '"'
+    use_fts = len(term) >= 3
+    modes = set()
+
+    def fetch(sql_fts, sql_like, params_extra=()):
+        if use_fts:
+            try:
+                got = rows(con.execute(sql_fts, (phrase, limit, *params_extra)))
+                if got:
+                    modes.add("fts")
+                    return got
+            except sqlite3.OperationalError:
+                pass
+        got = rows(con.execute(sql_like, (like_pattern(term), limit, *params_extra)))
+        if got:
+            modes.add("like")
+        return got
+
     hits = []
-
-    if len(term) >= 3:
-        phrase = '"' + term.replace('"', '""') + '"'
-        try:
-            hits = rows(con.execute("""
-                SELECT p.id, p.session_id, p.project_id, p.ts, p.text, p.is_slash,
-                       pr.display_name, s.title
-                FROM prompt_fts f
-                JOIN prompt p  ON p.id = f.rowid
-                LEFT JOIN project pr ON pr.id = p.project_id
-                LEFT JOIN session s  ON s.id = p.session_id
-                WHERE prompt_fts MATCH ? ORDER BY rank LIMIT ?
-            """, (phrase, limit)))
-        except sqlite3.OperationalError:
-            hits = []
-
-    if not hits:
-        mode = "like"
-        hits = rows(con.execute("""
-            SELECT p.id, p.session_id, p.project_id, p.ts, p.text, p.is_slash,
-                   pr.display_name, s.title
+    if scope in ("all", "prompt"):
+        hits += fetch("""
+            SELECT 'prompt' AS kind, p.id, p.session_id, p.project_id, p.ts,
+                   p.text, p.is_slash, pr.display_name, s.title
+            FROM prompt_fts f
+            JOIN prompt p ON p.id = f.rowid
+            LEFT JOIN project pr ON pr.id = p.project_id
+            LEFT JOIN session s ON s.id = p.session_id
+            WHERE prompt_fts MATCH ? ORDER BY rank LIMIT ?
+        """, """
+            SELECT 'prompt' AS kind, p.id, p.session_id, p.project_id, p.ts,
+                   p.text, p.is_slash, pr.display_name, s.title
             FROM prompt p
             LEFT JOIN project pr ON pr.id = p.project_id
-            LEFT JOIN session s  ON s.id = p.session_id
+            LEFT JOIN session s ON s.id = p.session_id
             WHERE p.text LIKE ? ESCAPE '\\' ORDER BY p.ts DESC LIMIT ?
-        """, (like_pattern(term), limit)))
+        """)
 
+    if scope in ("all", "reply"):
+        # turn_fts 索引了 2554 筆 assistant 摘要，之前完全沒被查詢過
+        hits += fetch("""
+            SELECT 'reply' AS kind, t.id, t.session_id, t.project_id, t.ts,
+                   t.assistant_summary AS text, 0 AS is_slash,
+                   pr.display_name, s.title
+            FROM turn_fts f
+            JOIN turn t ON t.id = f.rowid
+            LEFT JOIN project pr ON pr.id = t.project_id
+            LEFT JOIN session s ON s.id = t.session_id
+            WHERE turn_fts MATCH ? ORDER BY rank LIMIT ?
+        """, """
+            SELECT 'reply' AS kind, t.id, t.session_id, t.project_id, t.ts,
+                   t.assistant_summary AS text, 0 AS is_slash,
+                   pr.display_name, s.title
+            FROM turn t
+            LEFT JOIN project pr ON pr.id = t.project_id
+            LEFT JOIN session s ON s.id = t.session_id
+            WHERE t.assistant_summary LIKE ? ESCAPE '\\'
+            ORDER BY t.ts DESC LIMIT ?
+        """)
+
+    hits.sort(key=lambda h: h["ts"] or "", reverse=True)
     con.close()
-    return {"mode": mode, "query": term, "count": len(hits), "hits": hits}
+    return {"mode": "+".join(sorted(modes)) or "none", "query": term,
+            "scope": scope, "count": len(hits),
+            "prompts": sum(1 for h in hits if h["kind"] == "prompt"),
+            "replies": sum(1 for h in hits if h["kind"] == "reply"),
+            "hits": hits[:limit * 2]}
 
 
 @app.get("/api/roots")

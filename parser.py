@@ -111,10 +111,13 @@ _COMMAND_KINDS = (
     ("install", re.compile(r"\b(pip install|npm (i|install)|composer install|uv add)\b")),
 )
 
-_COMMIT_MSG = re.compile(
-    r"""git\s+commit\b[^\n]*?-m\s*(?:"([^"]*)"|'([^']*)'|(\S+))""", re.S
-)
-_COMMIT_HEREDOC = re.compile(r"git\s+commit\b[^\n]*<<[-']*\s*(\w+)\s*\n(.*?)\n\1", re.S)
+_GIT_COMMIT = re.compile(r"\bgit\s+(?:-\S+\s+|--\S+\s+)*commit\b")
+# <<'EOF' / <<"EOF" / <<EOF / <<-EOF —— 收尾引號要吃掉，之前漏了這個
+_HEREDOC = re.compile(r"<<-?\s*(['\"]?)(\w+)\1[^\n]*\r?\n")
+_M_FLAG = re.compile(r"(?:^|\s)-m\s*(?:\"((?:[^\"\\]|\\.)*)\"|'([^']*)'|([^\s;&|]+))")
+# PowerShell here-string：git commit -m @'\n<訊息>\n'@ —— 訊息在下一行，
+# 不處理的話 -m 只會抓到 "@'" 這個碎片
+_PS_HERESTRING = re.compile(r"(?:^|\s)-m\s*@(['\"])[^\n]*\r?\n")
 
 
 def classify_command(command):
@@ -125,16 +128,44 @@ def classify_command(command):
 
 
 def extract_commit_messages(command):
-    """從一段 shell 指令抽出 git commit 訊息（支援 -m 與 heredoc 兩種寫法）。"""
+    """從一段 shell 指令抽出 git commit 的主旨行。
+
+    支援 `-m "..."` 與 `-F - <<'EOF' … EOF` 兩種寫法，後者是這個環境的主流
+    （Bash 工具寫多行訊息只能用 heredoc）。從每個 `git commit` 出現的位置
+    往後找，所以 `cd x && git add -A && git commit …` 這種串接也吃得到。
+    """
     out = []
-    for match in _COMMIT_HEREDOC.finditer(command):
-        body = match.group(2).strip()
-        if body:
-            out.append(body.splitlines()[0].strip())
-    for match in _COMMIT_MSG.finditer(command):
-        msg = next((g for g in match.groups() if g), "").strip()
-        if msg:
-            out.append(msg.splitlines()[0].strip())
+    for hit in _GIT_COMMIT.finditer(command):
+        tail = command[hit.end():]
+        line_end = tail.find("\n")
+        first_line = tail if line_end < 0 else tail[:line_end]
+
+        heredoc = _HEREDOC.search(tail)
+        if heredoc and (line_end < 0 or heredoc.start() <= line_end):
+            delim = heredoc.group(2)
+            body = tail[heredoc.end():]
+            end = re.search(rf"^\s*{re.escape(delim)}\s*$", body, re.M)
+            if end:
+                body = body[:end.start()]
+            subject = next((l.strip() for l in body.splitlines() if l.strip()), "")
+        else:
+            ps = _PS_HERESTRING.search(tail)
+            if ps and (line_end < 0 or ps.start() <= line_end):
+                quote = ps.group(1)
+                body = tail[ps.end():]
+                end = body.find(quote + "@")
+                if end >= 0:
+                    body = body[:end]
+                subject = next((l.strip() for l in body.splitlines() if l.strip()), "")
+            else:
+                flag = _M_FLAG.search(first_line)
+                if not flag:
+                    continue                  # --amend --no-edit 這種沒有訊息
+                subject = next((g for g in flag.groups() if g is not None), "").strip()
+                subject = subject.splitlines()[0].strip() if subject else ""
+
+        if subject and subject not in out:
+            out.append(subject[:500])
     return out
 
 

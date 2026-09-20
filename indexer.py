@@ -604,12 +604,26 @@ def rollup(con):
 
 
 def run(full=False):
+    # --full 砍掉整個 DB 重建，但使用者設定（專案根目錄）不該跟著陪葬。
+    # 先抄出來，建好新 DB 再寫回去。
+    saved_config = {}
     if full and DB_PATH.exists():
+        try:
+            old = sqlite3.connect(DB_PATH)
+            old.row_factory = sqlite3.Row
+            saved_config = {r["key"]: r["value"]
+                            for r in old.execute("SELECT key, value FROM app_config")}
+            old.close()
+        except sqlite3.Error:
+            pass
         for suffix in ("", "-wal", "-shm"):
             Path(str(DB_PATH) + suffix).unlink(missing_ok=True)
 
     started = time.time()
     con = connect()
+    for key, value in saved_config.items():
+        con.execute("INSERT OR REPLACE INTO app_config(key, value) VALUES (?, ?)",
+                    (key, value))
     resolver = Resolver(con)
 
     prompts = index_history(con, resolver)

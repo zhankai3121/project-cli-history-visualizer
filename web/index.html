@@ -147,7 +147,12 @@ h3:first-child{margin-top:0}
      border-radius:var(--radius); backdrop-filter:var(--blur);
      padding:.5em .6em; margin-bottom:.35em; cursor:pointer; font-size:.85rem}
 .hit:hover{border-color:var(--accent)}
+.hit.reply{border-left:3px solid var(--dim)}
 .hit .w{font-size:.64rem; color:var(--dim); margin-bottom:.2em}
+.scopebar{display:flex; gap:.35em; align-items:center; margin:.45em 0}
+.scopebar button{font-size:.7rem; padding:.25em .7em; border-radius:999px}
+.scopebar button[aria-pressed="true"]{background:var(--accent);
+  border-color:var(--accent); color:var(--on-accent)}
 mark{background:var(--accent); color:var(--on-accent); border-radius:3px; padding:0 2px}
 .note{color:var(--dim); font-size:.7rem; margin:.45em 0}
 .dot{width:.42em; height:.42em; border-radius:50%; display:inline-block; margin-right:.3em;
@@ -448,7 +453,8 @@ const api = p => fetch(p).then(r => r.json());
 const esc = s => (s ?? "").replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
 const DAY = 864e5;
 
-let STATE = { projects: [], filters: new Set(), sort: "recent", query: "" };
+let STATE = { projects: [], filters: new Set(), sort: "recent", query: "",
+              searchScope: "all", lastRaw: "" };
 
 const LIGHT = {
   green:  "綠燈：最後一次 commit 在最後一則 prompt 之後，已落實",
@@ -498,11 +504,14 @@ function highlight(text, q) {
 }
 
 function hitList(hits, q, stamp = h => date(h.ts)) {
-  return hits.map(h => `
-    <div class="hit" data-p="${h.project_id}" data-s="${esc(h.session_id)}">
-      <div class="w">${esc(h.display_name || "?")} › ${esc(h.title || h.session_id.slice(0, 8))} · ${stamp(h)}</div>
-      <div>${highlight(h.text.slice(0, 300), q)}</div>
-    </div>`).join("") || '<p class="empty">沒有命中。</p>';
+  return hits.map(h => {
+    const reply = h.kind === "reply";
+    return `
+    <div class="hit${reply ? " reply" : ""}" data-p="${h.project_id}" data-s="${esc(h.session_id)}">
+      <div class="w">${reply ? "↩ 回覆 · " : ""}${esc(h.display_name || "?")} › ${esc(h.title || h.session_id.slice(0, 8))} · ${stamp(h)}</div>
+      <div>${highlight((h.text || "").slice(0, 300), q)}</div>
+    </div>`;
+  }).join("") || '<p class="empty">沒有命中。</p>';
 }
 
 async function copy(text, btn) {
@@ -702,17 +711,32 @@ async function runSearch(raw) {
     if (hit) { openProject(hit.id); return; }
   }
 
-  const d = await api("/api/search?q=" + encodeURIComponent(term));
+  const d = await api("/api/search?q=" + encodeURIComponent(term)
+                      + "&scope=" + STATE.searchScope);
   let hits = d.hits;
   if (scope) hits = hits.filter(h =>
     (h.display_name || "").toLowerCase().includes(scope.toLowerCase()));
 
   STATE.query = term;
+  STATE.lastRaw = raw;
   show("results");
+  const on = s => STATE.searchScope === s;
   $("#results").innerHTML = `
-    <p class="note">「${esc(term)}」找到 ${hits.length} 筆${scope ? `（限 @${esc(scope)}）` : ""}
-      <span class="src">· ${d.mode === "fts" ? "FTS5 trigram" : "LIKE fallback（查詢短於 3 字元）"}</span></p>
+    <div class="scopebar">
+      <button data-scope="all"    aria-pressed="${on("all")}">全部 ${d.count}</button>
+      <button data-scope="prompt" aria-pressed="${on("prompt")}">我的 prompt ${d.prompts}</button>
+      <button data-scope="reply"  aria-pressed="${on("reply")}">Claude 回覆 ${d.replies}</button>
+    </div>
+    <p class="note">「${esc(term)}」${hits.length} 筆${scope ? `（限 @${esc(scope)}）` : ""}
+      <span class="src">· ${d.mode.includes("like")
+        ? "含 LIKE fallback（查詢短於 3 字元）" : "FTS5 trigram"}</span></p>
     ${hitList(hits, term)}`;
+  $("#results .scopebar").onclick = e => {
+    const b = e.target.closest("[data-scope]");
+    if (!b) return;
+    STATE.searchScope = b.dataset.scope;
+    runSearch(STATE.lastRaw);
+  };
 }
 
 $("#results").addEventListener("click", e => {
