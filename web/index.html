@@ -156,8 +156,18 @@ main{padding:.7em var(--main-pad) 1.2em}
    .list 刻意 flex-grow:0 —— 讓它長的話 1920px 上會佔掉三分之一寬度，
    而 session 列只是標題加一行摘要，用不到那麼寬。多出來的空間全給 .pane。 */
 .split{display:flex; flex-wrap:wrap; gap:.8em; align-items:flex-start}
+/* 捲軸藏起來之後，用底部的漸層遮罩暗示「下面還有」。捲到底時遮罩消失，
+   靠 CSS 自己的 scroll 偵測做不到，所以由 JS 加 .at-end。 */
+.list:not(.at-end), .pane:not(.at-end){
+  -webkit-mask-image:linear-gradient(180deg, #000 calc(100% - 2.2em), transparent);
+  mask-image:linear-gradient(180deg, #000 calc(100% - 2.2em), transparent);
+}
 .list{flex:0 1 14rem; min-width:0; max-width:100%;
       display:flex; flex-direction:column; gap:.35em; max-height:78vh; overflow:auto}
+/* 側欄與對話區藏捲軸但保留捲動。代價是少了「還有內容」的視覺提示，
+   所以下面補一道底部漸層當提示。 */
+.list, .pane{scrollbar-width:none; -ms-overflow-style:none}
+.list::-webkit-scrollbar, .pane::-webkit-scrollbar{width:0; height:0}
 .sess{
   background:var(--card-bg); border:var(--border-w) solid var(--line);
   border-radius:var(--radius); padding:.45em .6em; cursor:pointer;
@@ -796,6 +806,7 @@ async function openProject(id, focusSession) {
     if (act === "code") location.href = "vscode://file/" + project.real_path.replace(/\\/g, "/");
     if (act === "path") copy(project.real_path, e.target);
   };
+  watchScroll($("#detail .list"));
   if (sessions.length) openSession(focusSession || sessions[0].id);
 }
 
@@ -862,6 +873,10 @@ async function openSession(id) {
     const sid = e.target.dataset.resume;
     if (sid) copy(`claude --resume ${sid}`, e.target);
   };
+  const pane = $("#sesspane");
+  pane.scrollTop = 0;
+  watchScroll(pane);
+  markScrollEnd(pane);
 
   // 窄螢幕上左右欄是堆疊的，不捲過去的話點了 session 只會看到原本的列表
   if (window.matchMedia("(max-width: 900px)").matches) {
@@ -1145,6 +1160,22 @@ $("#theme").onclick = () => {
   document.documentElement.setAttribute("data-theme", next);
   try { localStorage.setItem("clihv-theme", next); } catch {}
 };
+
+/* 捲軸藏起來了，用底部漸層當「下面還有」的提示。
+   捲到底、或內容根本不需要捲時就把遮罩拿掉。 */
+function markScrollEnd(el) {
+  if (!el) return;
+  const atEnd = el.scrollTop + el.clientHeight >= el.scrollHeight - 2;
+  el.classList.toggle("at-end", atEnd);
+}
+
+function watchScroll(el) {
+  if (!el || el.dataset.watched) return;
+  el.dataset.watched = "1";
+  el.addEventListener("scroll", () => markScrollEnd(el), { passive: true });
+  new ResizeObserver(() => markScrollEnd(el)).observe(el);
+  markScrollEnd(el);
+}
 
 /* header 會隨視窗寬度換行，高度不是固定值 —— 量出來給次要工具列當 sticky top。
    字級改變（A±）與主題切換都會讓高度變，所以用 ResizeObserver 而不是只綁 resize。 */

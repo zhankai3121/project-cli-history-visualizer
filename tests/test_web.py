@@ -39,6 +39,40 @@ def decls(body):
     return got
 
 
+def strip_media(text):
+    """拿掉所有 @media 區塊，只留頂層規則。"""
+    out, i = [], 0
+    while i < len(text):
+        m = re.compile(r"@media[^{]*\{").search(text, i)
+        if not m:
+            out.append(text[i:])
+            break
+        out.append(text[i:m.start()])
+        depth, j = 1, m.end()
+        while j < len(text) and depth:
+            depth += (text[j] == "{") - (text[j] == "}")
+            j += 1
+        i = j
+    return "".join(out)
+
+
+BASE_CSS = strip_media(CSS)
+
+
+def props(selector, source=None):
+    """把所有以這個選擇器為目標的頂層規則合併起來。
+
+    `.list{…}` 與 `.list, .pane{…}` 都要算進去 —— 用 regex 抓第一個
+    符合的區塊會挑錯（合併規則可能排在前面），CSS 本身也是層疊的。
+    """
+    merged = {}
+    for m in re.finditer(r"([^{}]+)\{([^}]*)\}", source if source is not None else BASE_CSS):
+        names = [s.strip() for s in m.group(1).split(",")]
+        if selector in names:
+            merged.update(dict(decls(m.group(2))))
+    return merged
+
+
 def balanced(text, start):
     """從 start（指向 '('）往後找配對的右括號，回傳內容。"""
     depth, i = 0, start
@@ -174,15 +208,13 @@ def media_body(min_w=0, max_w=10_000):
 
 def test_split_在窄螢幕會堆疊():
     """兩種機制都接受：flex-wrap 自然塌陷，或斷點改單欄。"""
-    m = re.search(r"\.split\s*\{([^}]*)\}", CSS)
-    assert m, "找不到 .split"
-    props = dict(decls(m.group(1)))
+    base = props(".split")
+    assert base, "找不到 .split"
 
-    if props.get("display") == "flex" and props.get("flex-wrap") == "wrap":
+    if base.get("display") == "flex" and base.get("flex-wrap") == "wrap":
         # 靠 flex-wrap 塌陷的話，子項一定要有 flex-basis，否則永遠不換行
         for sel in (".list", ".pane"):
-            child = dict(decls(re.search(re.escape(sel) + r"\s*\{([^}]*)\}",
-                                         CSS).group(1)))
+            child = props(sel)
             assert "flex" in child or "flex-basis" in child, \
                 f"{sel} 沒有 flex-basis，.split 不會換行"
             assert child.get("min-width") == "0", \
@@ -195,9 +227,7 @@ def test_split_在窄螢幕會堆疊():
 
 
 def flex_basis_rem(selector):
-    body = re.search(re.escape(selector) + r"\s*\{([^}]*)\}", CSS).group(1)
-    value = dict(decls(body)).get("flex", "")
-    hit = re.search(r"([\d.]+)rem", value)
+    hit = re.search(r"([\d.]+)rem", props(selector).get("flex", ""))
     return float(hit.group(1)) if hit else None
 
 
@@ -216,8 +246,7 @@ def test_側欄基準總和要對上堆疊斷點():
 
 def test_側欄不要跟著變寬():
     """session 列只有標題加一行摘要，長到 1920px 的三分之一是浪費。"""
-    body = re.search(r"\.list\s*\{([^}]*)\}", CSS).group(1)
-    grow = dict(decls(body)).get("flex", "").split()[0]
+    grow = props(".list").get("flex", "").split()[0]
     assert grow == "0", f".list 的 flex-grow 是 {grow}，寬螢幕會長得太寬"
 
 
@@ -225,6 +254,25 @@ def test_堆疊之後側欄要吃滿整行():
     narrow = media_body(max_w=999)
     assert re.search(r"\.list\s*\{[^}]*flex-basis:\s*100%", narrow), \
         "堆疊後 .list 還是 14rem，右邊會空一大塊"
+
+
+@pytest.mark.parametrize("sel", [".list", ".pane"])
+def test_側欄與對話區藏捲軸但還能捲(sel):
+    merged = props(sel)
+    assert merged.get("scrollbar-width") == "none", f"{sel} 在 Firefox 上捲軸還在"
+    assert f"{sel}::-webkit-scrollbar" in CSS.replace(" ", ""), \
+        f"{sel} 在 WebKit 上捲軸還在"
+    # 藏捲軸不等於不能捲 —— overflow 必須還在
+    assert merged.get("overflow") == "auto", f"{sel} 不能捲了"
+
+
+def test_藏捲軸要補視覺提示():
+    """沒有捲軸就沒有「還有內容」的線索，靠底部漸層遮罩補。"""
+    assert re.search(r"\.list:not\(\.at-end\)", CSS), "沒有底部漸層提示"
+    assert "mask-image" in CSS
+    assert "at-end" in RAW_JS, "JS 沒有在捲到底時取消遮罩"
+    assert re.search(r"addEventListener\(\s*[\"']scroll[\"']", RAW_JS), \
+        "沒有監聽捲動，遮罩不會消失"
 
 
 def test_堆疊時不會兩個滿版高度相加():
