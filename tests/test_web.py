@@ -422,6 +422,36 @@ def test_主題不碰版面原語(selector, body):
             f"{selector.strip()} 設了版面屬性 {prop}:{value}，換這個主題會把 RWD 弄壞"
 
 
+def test_明暗與主題合在同一個選單():
+    sel = re.search(r'<select id="skin".*?</select>', HTML, re.S).group(0)
+    values = re.findall(r'<option value="([^"]*)"', sel)
+    assert "light" in values and "dark" in values, "選單裡沒有亮/暗兩個預設"
+    assert "" not in values, "還留著空值的舊「預設」選項"
+    skins = {s for s in re.findall(r':root\[data-skin="([^"]+)"\]', CSS)}
+    assert skins <= set(values), f"有主題沒出現在選單: {skins - set(values)}"
+
+
+def test_明暗與主題互斥():
+    """主題自己定義全部色票，留著 data-theme 只會互相干擾。"""
+    body = re.search(r"function setSkin\(.*?\n\}", RAW_JS, re.S).group(0)
+    assert 'removeAttribute("data-skin")' in body
+    assert 'removeAttribute("data-theme")' in body
+
+
+def test_移除了獨立的明暗按鈕():
+    assert 'id="theme"' not in HTML, "#theme 還在"
+    assert '$("#theme")' not in RAW_JS, "JS 還在抓 #theme"
+
+
+def test_沒選過之前不要寫入偏好():
+    """使用者沒動過就該跟隨系統，不該被預設值蓋掉。"""
+    assert "prefers-color-scheme: dark" in RAW_JS, "沒有讀系統偏好"
+    assert re.search(r'getItem\(\s*["\']clihv-theme["\']\s*\)', RAW_JS), \
+        "沒有讀舊的 clihv-theme，先前設過明暗的人會被重置"
+    assert re.search(r'removeItem\(\s*["\']clihv-theme["\']\s*\)', RAW_JS), \
+        "遷移後沒清掉舊鍵"
+
+
 def test_主題沒有覆寫字級旋鈕():
     for selector, body in skin_rules():
         assert "--fs" not in body, f"{selector.strip()} 動了 --fs"

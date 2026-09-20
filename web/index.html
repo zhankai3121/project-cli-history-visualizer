@@ -86,7 +86,7 @@ input#q{flex:1; min-width:11em; font-size:.82rem}
 select{font-size:.8rem}
 button{cursor:pointer}
 button:hover{border-color:var(--accent)}
-#fsdec,#fsinc,#theme,#reindex{font-size:.78rem; padding:.3em .6em; line-height:1.2}
+#fsdec,#fsinc,#reindex{font-size:.78rem; padding:.3em .6em; line-height:1.2}
 main{padding:.7em var(--main-pad) 1.2em}
 /* header 底下的次要工具列（篩選 chip、回總覽、搜尋範圍）也黏住，
    往下滾時還按得到。--head-h 由 JS 量出來 —— header 會隨視窗寬度換行，
@@ -511,7 +511,8 @@ kbd{font:.58rem/1 ui-monospace,monospace; border:1px solid var(--line); border-b
   </select>
   <button id="folders" title="設定要掃描的專案資料夾">📁 資料夾</button>
   <select id="skin" title="外觀主題">
-    <option value="">預設</option>
+    <option value="light">預設 · 亮</option>
+    <option value="dark">預設 · 暗</option>
     <option value="metal">石墨金屬</option>
     <option value="mesh">珊瑚紫霧</option>
     <option value="lava">黃銅熔岩</option>
@@ -525,7 +526,6 @@ kbd{font:.58rem/1 ui-monospace,monospace; border:1px solid var(--line); border-b
   </select>
   <button id="fsdec" title="字體縮小">A−</button>
   <button id="fsinc" title="字體放大">A+</button>
-  <button id="theme" title="明暗切換">◐</button>
   <button id="reindex" title="重新索引">↻</button>
 </header>
 
@@ -1120,12 +1120,22 @@ $("#manual").addEventListener("keydown", e => {
   e.stopPropagation();          // 別讓 Esc/Ctrl+K 的全域處理搶走輸入
 });
 
-/* 外觀主題：只換 CSS 變數，版面規則完全不動 */
-function setSkin(name) {
+/* 外觀：明暗與 10 種主題合在同一個選單。
+   light / dark 走 data-theme（沿用預設配色），其餘走 data-skin。
+   兩者互斥 —— 主題自己定義了全部色票，留著 data-theme 只會互相干擾。 */
+const PLAIN = new Set(["light", "dark"]);
+
+function setSkin(value) {
   const root = document.documentElement;
-  name ? root.setAttribute("data-skin", name) : root.removeAttribute("data-skin");
-  $("#skin").value = name || "";
-  try { localStorage.setItem("clihv-skin", name || ""); } catch {}
+  if (PLAIN.has(value)) {
+    root.setAttribute("data-theme", value);
+    root.removeAttribute("data-skin");
+  } else {
+    root.setAttribute("data-skin", value);
+    root.removeAttribute("data-theme");
+  }
+  $("#skin").value = value;
+  try { localStorage.setItem("clihv-skin", value); } catch {}
 }
 
 $("#skin").onchange = e => setSkin(e.target.value);
@@ -1153,13 +1163,6 @@ function currentFontScale() {
 
 $("#fsinc").onclick = () => setFontScale(currentFontScale() + SCALE_STEP);
 $("#fsdec").onclick = () => setFontScale(currentFontScale() - SCALE_STEP);
-
-$("#theme").onclick = () => {
-  const dark = document.documentElement.getAttribute("data-theme") === "dark";
-  const next = dark ? "light" : "dark";
-  document.documentElement.setAttribute("data-theme", next);
-  try { localStorage.setItem("clihv-theme", next); } catch {}
-};
 
 /* 捲軸藏起來了，用底部漸層當「下面還有」的提示。
    捲到底、或內容根本不需要捲時就把遮罩拿掉。 */
@@ -1201,8 +1204,6 @@ document.addEventListener("keydown", e => {
 });
 
 try {
-  const saved = localStorage.getItem("clihv-theme");
-  if (saved) document.documentElement.setAttribute("data-theme", saved);
   const scale = parseFloat(localStorage.getItem("clihv-fs-scale"));
   if (scale) {
     setFontScale(scale);
@@ -1213,7 +1214,17 @@ try {
     localStorage.removeItem("clihv-fs");
   }
   const skin = localStorage.getItem("clihv-skin");
-  if (skin) setSkin(skin);
+  if (skin) {
+    setSkin(skin);
+  } else {
+    // 舊版把明暗存在另一個鍵，併過來
+    const legacy = localStorage.getItem("clihv-theme");
+    if (legacy) setSkin(legacy);
+    // 都沒選過就先跟隨系統，而且不寫入 —— 別替使用者決定
+    else $("#skin").value =
+      matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  }
+  localStorage.removeItem("clihv-theme");
   const group = localStorage.getItem("clihv-group");
   if (group) { STATE.group = group; $("#group").value = group; }
 } catch {}
