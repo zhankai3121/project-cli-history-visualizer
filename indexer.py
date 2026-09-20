@@ -24,6 +24,7 @@ import sys
 import time
 from pathlib import Path
 
+import codex
 import parser as P
 
 CLAUDE_DIR = Path.home() / ".claude"
@@ -103,6 +104,8 @@ def migrate(con):
             ("is_system", "INTEGER NOT NULL DEFAULT 0"),
         ],
         "progress_signal": [("state", "TEXT")],
+        "session": [("tool", "TEXT NOT NULL DEFAULT 'claude'")],
+        "prompt": [("tool", "TEXT NOT NULL DEFAULT 'claude'")],
     }
     for table, columns in wanted.items():
         have = {r["name"] for r in con.execute(f"PRAGMA table_info({table})")}
@@ -385,6 +388,137 @@ def index_memory_files(con, resolver):
     return count
 
 
+# ── 管線 E：Codex CLI ─────────────────────────────────────────────────────
+#
+# 與 Claude 的差別：
+#   - Codex 的 history.jsonl 只有 {session_id, ts, text}，沒有 cwd。專案歸屬
+#     只能靠 rollout 的 session_meta.cwd 對回來，所以 rollout 要先跑。
+#   - 真人 prompt 在 event_msg/user_message，不是 response_item 的 role=="user"
+#     （那些是注入的 AGENTS.md 與環境資訊）。判別式在 codex.py。
+#   - 沒有 away_summary / ai-title 這種現成摘要，所以「狀態」只能取最後一則
+#     agent_message，goal / next_step 留空。UI 已經能處理缺訊號的情況。
+
+def index_codex_rollout(con, resolver, path):
+    session_id = codex.session_id_of(path)
+    offset = scan_cursor(con, path)
+    if offset is None:
+        return 0
+
+    project_id = None
+    pending_error = False
+    turns = 0
+    last_ts = None
+
+    for new_offset, rec in P.iter_jsonl(path, offset):
+        ev = codex.event(rec)
+        offset = new_offset
+        if not ev:
+            continue
+        ts = ev.get("ts") or last_ts
+        last_ts = ts or last_ts
+
+        if ev["kind"] == "meta":
+            if ev.get("cwd") and project_id is None:
+                project_id = resolver.project(ev["cwd"])
+                resolver.ensure_session(session_id, project_id, tool="codex",
+                                        transcript_state="live",
+                                        transcript_path=str(path))
+            continue
+
+        if ev["kind"] == "user":
+            con.execute(
+                "INSERT OR IGNORE INTO prompt"
+                "(session_id, project_id, ts, seq, text, is_slash, source, tool) "
+                "VALUES (?,?,?,0,?,?, 'transcript', 'codex')",
+                (session_id, project_id, ts, ev["text"],
+                 1 if ev["text"].lstrip().startswith("/") else 0))
+            continue
+
+        if ev["kind"] == "assistant":
+            con.execute(
+                "INSERT INTO turn(session_id, project_id, ts, assistant_summary, "
+                "tools_json, has_error) VALUES (?,?,?,?,?,?)",
+                (session_id, project_id, ts, ev["text"][:4000], "[]",
+                 int(pending_error)))
+            turns += 1
+            pending_error = False
+            continue
+
+        if ev["kind"] == "tool":
+            name, args = ev["name"], ev["args"]
+            if codex.is_file_tool(name):
+                for target, verb in codex.patch_files(args):
+                    con.execute(
+                        "INSERT INTO file_touch(session_id, project_id, ts, path, verb) "
+                        "VALUES (?,?,?,?,?)", (session_id, project_id, ts, target, verb))
+            elif codex.is_shell_tool(name):
+                command = codex.shell_command(args)
+                if command:
+                    con.execute(
+                        "INSERT INTO command_run(session_id, project_id, ts, command, kind) "
+                        "VALUES (?,?,?,?,?)",
+                        (session_id, project_id, ts, command[:2000],
+                         P.classify_command(command)))
+                    for message in P.extract_commit_messages(command):
+                        con.execute(
+                            "INSERT INTO commit_ref(session_id, project_id, ts, message) "
+                            "VALUES (?,?,?,?)",
+                            (session_id, project_id, ts, message[:500]))
+            continue
+
+        if ev["kind"] == "tool_output" and ev.get("has_error"):
+            pending_error = True
+
+    resolver.ensure_session(session_id, project_id, tool="codex",
+                            transcript_state="live", transcript_path=str(path))
+    save_cursor(con, path, offset)
+    return turns
+
+
+def index_codex_history(con, resolver):
+    """history.jsonl 補上 rollout 已經被刪掉的那些 session 的 prompt。
+
+    沒有 cwd，所以 project_id 從 session 表對回來；對不到就留空。
+    """
+    path = codex.history_path()
+    if not path:
+        return 0
+    offset = scan_cursor(con, path)
+    if offset is None:
+        return 0
+
+    added, seen = 0, {}
+    for new_offset, rec in P.iter_jsonl(path, offset):
+        for row in codex.history_rows([rec]):
+            sid = row["session_id"]
+            resolver.ensure_session(sid, None, tool="codex")
+            known = con.execute("SELECT project_id FROM session WHERE id = ?",
+                                (sid,)).fetchone()
+            pid = known["project_id"] if known else None
+            seen[sid] = seen.get(sid, 0) + 1
+            cur = con.execute(
+                "INSERT OR IGNORE INTO prompt"
+                "(session_id, project_id, ts, seq, text, is_slash, source, tool) "
+                "VALUES (?,?,?,?,?,?, 'history', 'codex')",
+                (sid, pid, row["ts"], seen[sid], row["text"],
+                 1 if row["text"].lstrip().startswith("/") else 0))
+            added += cur.rowcount
+        offset = new_offset
+
+    save_cursor(con, path, offset)
+    return added
+
+
+def index_codex(con, resolver):
+    """回傳 (prompt 數, turn 數, rollout 檔數)。沒裝 Codex 就整段跳過。"""
+    if not codex.available():
+        return 0, 0, 0
+    files = codex.session_files()
+    turns = sum(index_codex_rollout(con, resolver, p) for p in files)
+    prompts = index_codex_history(con, resolver)   # rollout 先跑，才有 cwd 可對
+    return prompts, turns, len(files)
+
+
 # ── 管線 D：磁碟狀態對帳（資料夾刪掉就從網頁消失）────────────────────────
 #
 # 專案來源仍然是「跑過 CLI 的」（history.jsonl + transcript 的 cwd）。
@@ -660,6 +794,9 @@ def run(full=False):
         turns += index_transcript(con, resolver, path)
     con.commit()
 
+    cx_prompts, cx_turns, cx_files = index_codex(con, resolver)
+    con.commit()
+
     memories = index_memory_files(con, resolver)
     scanned, orphans = scan_project_dirs(con, resolver)
     appeared, vanished = sync_disk_projects(con)
@@ -674,10 +811,12 @@ def run(full=False):
         "SELECT COUNT(*) FROM project WHERE exists_on_disk = 1").fetchone()[0]
     con.close()
 
+    codex_note = (f", Codex +{cx_prompts} prompts / +{cx_turns} turns / "
+                  f"{cx_files} rollout") if cx_files or cx_prompts else ""
     print(f"索引完成 {time.time() - started:.2f}s  "
           f"(+{prompts} prompts, +{turns} turns, +{memories} memory 檔, "
           f"專案 +{appeared} / -{vanished}, 掃描 +{scanned} / 清孤兒 {orphans}, "
-          f"git repo {repos})")
+          f"git repo {repos}{codex_note})")
     print("  " + " · ".join(f"{k} {v}" for k, v in stats.items()))
     return stats
 

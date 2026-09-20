@@ -167,6 +167,36 @@ Server 每次提供專案清單時會順手 stat 一次資料夾，所以資料�
 排序：最近活動／停滯最久／紅旗優先／prompt 量
 篩選：有未完成的 Next／30 天內活躍／有紅旗／過程已蒸發／顯示已刪除的專案／顯示容器目錄／只看有 CLI 紀錄
 
+## 支援的 CLI
+
+| CLI | 資料來源 | 偵測方式 |
+|---|---|---|
+| **Claude Code** | `~/.claude/history.jsonl` + `~/.claude/projects/<slug>/*.jsonl` | 一律啟用 |
+| **OpenAI Codex** | `~/.codex/history.jsonl` + `~/.codex/sessions/<YYYY>/<MM>/<DD>/rollout-*.jsonl` | 有 `sessions/` 或 `history.jsonl` 才啟用；沒裝就整段跳過 |
+
+`CODEX_HOME` 環境變數可以改 Codex 的家目錄。兩邊的 prompt 與 session 都帶 `tool`
+欄位分開標記，卡片與 session 列會顯示來源。
+
+### Codex 格式的兩個關鍵事實
+
+格式來自 [openai/codex](https://github.com/openai/codex) 的原始碼（`HistoryEntry` struct
+與 rollout 檔名規則，Apache-2.0）與公開的 rollout 樣本。
+
+**1. 真人打的字在 `event_msg` / `user_message`，不是 `response_item` 的 `role=="user"`。**
+
+那些 `role=="user"` 的 `response_item` 是系統注入的東西 —— AGENTS.md 全文、
+`<environment_context>`、`<user_instructions>`。拿 `role` 判斷會把整份專案指示
+當成使用者 prompt 灌進資料庫。這跟 Claude 那邊 `<system-reminder>` 是同一類陷阱，
+`tests/test_codex.py` 有一組測試專門守這條。
+
+**2. Codex 的 `history.jsonl` 沒有 `cwd`**（Claude 的有）。
+
+`HistoryEntry` 只有 `{session_id, ts, text}` 三個欄位，專案歸屬只能靠 rollout 的
+`session_meta.cwd` 用 `session_id` 對回來 —— 所以索引順序是 rollout 先跑、history 後補。
+rollout 已經不在的 session 仍然留得住 prompt，只是沒有專案歸屬。
+
+順帶一提，Codex 的 `session_meta` 自帶 `git: {branch, commit}`，比 Claude 那邊多這層資訊。
+
 ### 專案清單的來源
 
 專案來自兩條互補的管道，用 `has_history` / `is_scanned` 分開標記：
@@ -281,7 +311,8 @@ Windows 主目錄、巢狀子專案、WSL 的專案各自收成一組，可逐�
 ```
 server.py            FastAPI，port 8787
 indexer.py           掃 ~/.claude -> SQLite（增量，靠 mtime/size/offset）
-parser.py            JSONL / Markdown 判別式（規格來源是 docs/jsonl-schema.md）
+parser.py            Claude Code 的 JSONL / Markdown 判別式（規格見 docs/jsonl-schema.md）
+codex.py             OpenAI Codex 的 rollout / history 解析
 schema.sql           資料表與 FTS5 定義
 web/index.html       單檔前端，無 build step，零外部依賴
 tests/               pytest（86 個）—— 用合成資料，不碰真實的 ~/.claude

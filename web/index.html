@@ -546,6 +546,8 @@ let STATE = { projects: [], filters: new Set(), sort: "recent", query: "",
               searchScope: "all", lastRaw: "", group: "none",
               collapsed: new Set() };
 
+const TOOL_LABEL = { claude: "Claude Code", codex: "Codex" };
+
 const LIGHT = {
   green:  "綠燈：最後一次 commit 在最後一則 prompt 之後，已落實",
   yellow: "黃燈：工作區有未提交的變更，正在產出中",
@@ -707,10 +709,13 @@ function card(p) {
   ].filter(Boolean).join("");
 
   const evaporated = p.session_count - p.live_sessions;
+  const tools = (p.tools || "").split(",").filter(Boolean);
   const bits = [
     `${p.prompt_count} prompts`, `${p.session_count} sessions`,
     p.commits ? `${p.commits} commits` : null,
     p.files ? `改 ${p.files} 檔` : null,
+    tools.length > 1 ? tools.map(t => TOOL_LABEL[t] || t).join(" + ")
+                     : (tools[0] === "codex" ? TOOL_LABEL.codex : null),
   ].filter(Boolean).join(" · ");
 
   return `<article class="${cls.join(" ")}" data-id="${p.id}">
@@ -765,7 +770,7 @@ function sessionRow(s) {
   const gone = s.transcript_state !== "live";
   return `<div class="sess" data-id="${s.id}">
     <div class="t">${esc(s.title || "（無標題）")}</div>
-    <div class="m">${date(s.started_at)} · ${s.prompt_count} prompts
+    <div class="m">${s.tool && s.tool !== "claude" ? esc(TOOL_LABEL[s.tool] || s.tool) + " · " : ""}${date(s.started_at)} · ${s.prompt_count} prompts
       ${s.files ? ` · 改 ${s.files} 檔` : ""}${s.commits ? ` · ${s.commits} commits` : ""}
       ${s.errors ? ` · <span class="flag">${s.errors} 錯誤</span>` : ""}
       ${gone ? " · ⏳ 過程已蒸發" : ""}</div>

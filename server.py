@@ -105,7 +105,9 @@ def overview(include_gone: bool = False, include_containers: bool = False,
                (SELECT COUNT(*) FROM commit_ref c WHERE c.project_id = p.id) AS commits,
                (SELECT COUNT(DISTINCT path) FROM file_touch f WHERE f.project_id = p.id) AS files,
                (SELECT COUNT(*) FROM session s
-                 WHERE s.project_id = p.id AND s.transcript_state = 'live') AS live_sessions
+                 WHERE s.project_id = p.id AND s.transcript_state = 'live') AS live_sessions,
+               (SELECT GROUP_CONCAT(DISTINCT s.tool) FROM session s
+                 WHERE s.project_id = p.id) AS tools
         FROM project p {where}
         ORDER BY p.last_seen DESC
     """))
@@ -165,7 +167,7 @@ def project_detail(project_id: int):
         raise HTTPException(404, "no such project")
     sessions = rows(con.execute("""
         SELECT s.id, s.title, s.started_at, s.ended_at, s.prompt_count,
-               s.transcript_state,
+               s.transcript_state, s.tool,
                (SELECT COUNT(DISTINCT path) FROM file_touch f WHERE f.session_id = s.id) AS files,
                (SELECT COUNT(*) FROM commit_ref c WHERE c.session_id = s.id) AS commits,
                (SELECT COUNT(*) FROM turn t WHERE t.session_id = s.id AND t.has_error = 1) AS errors
