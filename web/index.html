@@ -286,6 +286,7 @@ kbd{font:.58rem/1 ui-monospace,monospace; border:1px solid var(--line); border-b
 
 
 /* @F9-css */
+.kpi{font-size:1.4rem; font-weight:700; line-height:1.1}
 
 
 /* ── 外觀主題 ──────────────────────────────────────────────────────────
@@ -556,6 +557,7 @@ kbd{font:.58rem/1 ui-monospace,monospace; border:1px solid var(--line); border-b
   </select>
   <button id="fsdec" title="字體縮小">A−</button>
   <button id="fsinc" title="字體放大">A+</button>
+  <button id="week" title="每週回顧">📅 本週</button>
   <button id="reindex" title="重新索引">↻</button>
 </header>
 
@@ -582,6 +584,7 @@ kbd{font:.58rem/1 ui-monospace,monospace; border:1px solid var(--line); border-b
   <section id="detail" hidden></section>
   <section id="results" hidden></section>
   <!-- @F9-html -->
+  <section id="weekly" hidden></section>
 </main>
 
 <div class="modal" id="foldermodal" hidden>
@@ -660,7 +663,7 @@ function ago(iso) {
 }
 
 function show(id) {
-  for (const s of ["overview", "detail", "results"]) $("#" + s).hidden = (s !== id);
+  for (const s of ["overview", "detail", "results", "weekly"]) $("#" + s).hidden = (s !== id);
 }
 
 function highlight(text, q) {
@@ -1086,6 +1089,91 @@ async function loadModels(id) {
 
 
 /* @F9-js */
+/* ── 視圖 4：每週回顧 ─────────────────────────────────────────── */
+let WEEK = null;
+
+/* 位移在 UTC 做 —— 後端的分界線也是 UTC，用本地時間會差一天 */
+function shiftDays(iso, n) {
+  const d = new Date(iso + "T00:00:00Z");
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+
+/* 上週是 0 的時候算百分比只會得到 Infinity，直接講白話 */
+function vsPrev(now, was) {
+  if (!was) return now ? "上週掛零" : "上週也是 0";
+  const pct = Math.round((now - was) / was * 100);
+  return `vs 上週 ${pct > 0 ? "+" : ""}${pct}%`;
+}
+
+function kpi(label, value, note) {
+  return `<article class="card">
+    <h2><span>${esc(label)}</span></h2>
+    <div class="kpi">${esc(value)}</div>
+    <div class="meta">${esc(note)}</div>
+  </article>`;
+}
+
+function weekCard(p) {
+  const body = [["目標", p.goal], ["下一步", p.next_step]]
+    .filter(([, v]) => v)
+    .map(([k, v]) => `<b>${k}</b><span>${esc(v)}</span>`).join("");
+  const bits = [
+    `${p.prompts} prompts`, `${p.sessions} sessions`,
+    p.commits ? `${p.commits} commits` : null,
+    p.files ? `改 ${p.files} 檔` : null,
+    p.tokens_out ? `${fmt(p.tokens_out)} tok out` : null,
+  ].filter(Boolean).join(" · ");
+
+  return `<article class="card" data-id="${p.id}">
+    <h2><span>${esc(p.display_name || "?")}</span></h2>
+    ${body ? `<div class="rows">${body}</div>`
+           : `<p class="empty">這週沒有新的進度訊號</p>`}
+    <div class="meta">${bits}</div>
+  </article>`;
+}
+
+async function loadWeek(start) {
+  const d = WEEK = await api("/api/week" + (start ? "?start=" + start : ""));
+  const prompts = d.projects.reduce((a, p) => a + p.prompts, 0);
+  show("weekly");
+
+  $("#weekly").innerHTML = `
+    <div class="subbar">
+      <button class="back">← 回總覽</button>
+      <button class="back" data-week="${shiftDays(d.start, -7)}">◀ 上週</button>
+      <button class="back" data-week="${shiftDays(d.start, 7)}">下週 ▶</button>
+      <span class="here">${esc(d.start)} ～ ${esc(shiftDays(d.end, -1))}</span>
+    </div>
+    <p class="note">時間一律以 UTC 計 —— 本地時間的週一 00:00 不等於這裡的分界。</p>
+    <div class="grid">
+      ${kpi("prompts", String(prompts), vsPrev(prompts, d.prev.prompts))}
+      ${kpi("commits", String(d.commits.length), vsPrev(d.commits.length, d.prev.commits))}
+      ${kpi("tokens out", fmt(d.tokens.output), vsPrev(d.tokens.output, d.prev.tokens_out))}
+      ${kpi("紅旗", String(d.flags.length), "同一個檔案一週被改 3 次以上")}
+    </div>
+    <h3>專案</h3>
+    <div class="grid">${d.projects.map(weekCard).join("")
+      || '<p class="empty">這週沒有任何活動。</p>'}</div>
+    <h3>commits</h3>
+    <div class="tags">${d.commits.map(c => `<span class="tag">${
+      esc(c.display_name || "?")} · ${date(c.ts)} · ${esc(c.message)}</span>`).join("")
+      || '<p class="empty">這週沒有 commit。</p>'}</div>
+    <h3>紅旗</h3>
+    <div class="tags">${d.flags.map(f => `<span class="tag flag">🚩 ${
+      esc(f.display_name || "?")} › ${esc(f.path.split(/[\\/]/).pop())} 被改 ${f.n} 次</span>`).join("")
+      || '<p class="empty">這週沒有反覆修改的檔案。</p>'}</div>`;
+}
+
+$("#week").onclick = () => loadWeek();
+
+$("#weekly").addEventListener("click", e => {
+  const nav = e.target.closest("[data-week]");
+  if (nav) { loadWeek(nav.dataset.week); return; }
+  if (e.target.closest(".back")) { show("overview"); return; }
+  const card = e.target.closest(".card[data-id]");
+  if (card) openProject(card.dataset.id);
+});
 
 
 /* ── 控制項 ───────────────────────────────────────────────────── */

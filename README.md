@@ -226,6 +226,7 @@ Server 每次提供專案清單時會順手 stat 一次資料夾，所以資料�
 | 續接某次對話 | session 詳情 → 複製 `claude --resume <id>` |
 | 匯出交接文件 | session 詳情 → `匯出 Markdown`（下載 `session-<id>.md`） |
 | 開專案 | 專案頁 → 在 VS Code 開啟 |
+| 看這週做了什麼 | 標頭 `📅 本週`（◀ ▶ 切換週次，點專案卡進專案頁） |
 | 設定專案資料夾 | 標頭 `📁 資料夾` |
 | 字級調整 | 標頭 `A−` / `A+`（倍率 0.7–2.0，存 localStorage） |
 | 外觀 | 標頭下拉選單：**預設 · 亮** / **預設 · 暗** / 10 種主題 |
@@ -455,6 +456,7 @@ jsonl 是 append-only，所以 `scan_state` 記錄每個檔案的 `(mtime, size,
 | `GET /api/heatmap?metric=prompts\|tokens` | 每日 prompt 數；`tokens` 改回每日 token（熱度只算 input+cache_create+output，另附 `out` / `cache_read`） |
 | `GET /api/project/{id}/tokens` | 該專案的 token 用量：總量、模型分佈、每日曲線、子代理佔比 |
 | `GET /api/day/{YYYY-MM-DD}` | 某一天的所有 prompt |
+| `GET /api/week?start=YYYY-MM-DD` | 一週回顧：專案、commit、紅旗、token，附上週對照（`start` 預設本週一，時間以 UTC 分界） |
 | `POST /api/reindex` | 增量重新索引 |
 
 ---
