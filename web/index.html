@@ -585,6 +585,7 @@ kbd{font:.58rem/1 ui-monospace,monospace; border:1px solid var(--line); border-b
       <button class="chip" data-f="gone" aria-pressed="false">顯示已刪除的專案</button>
       <button class="chip" data-f="container" aria-pressed="false">顯示非專案路徑</button>
       <button class="chip" data-f="onlyhist" aria-pressed="false">只看有 CLI 紀錄</button>
+      <button class="chip" data-f="mismatch" aria-pressed="false">手寫與實作不符</button>
       <button class="chip" id="feed">最近動態 →</button>
     </div>
     <div class="grid" id="grid"></div>
@@ -724,6 +725,7 @@ function passes(p) {
   if (f.has("active") && (days(p.last_seen) ?? 1e9) > 30) return false;
   if (f.has("flags") && !p.hotspots.length) return false;
   if (f.has("evap") && p.live_sessions > 0) return false;
+  if (f.has("mismatch") && !p.mismatch) return false;
   return true;
 }
 
@@ -821,6 +823,7 @@ function card(p) {
       ${gitLine(p)}
       ${evaporated ? `<br>⏳ ${evaporated} 個 session 的過程已蒸發` : ""}
       ${p.hotspots.map(h => `<br><span class="flag">🚩 ${esc(h.path.split(/[\\/]/).pop())} 被改 ${h.n} 次</span>`).join("")}
+      ${p.mismatch ? `<br><span class="flag">⚠ ${esc(p.mismatch.detail)}</span>` : ""}
       ${p.last_prompt ? `<br>最後「${esc(p.last_prompt.text.slice(0, 46))}」${date(p.last_prompt.ts)}` : ""}
       ${p.sources.length ? `<br><span class="src">來源 ${p.sources.map(esc).join(" · ")}</span>` : ""}
     </div>
