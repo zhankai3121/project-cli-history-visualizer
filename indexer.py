@@ -103,6 +103,8 @@ def migrate(con):
             ("is_scanned", "INTEGER NOT NULL DEFAULT 0"),
             ("is_system", "INTEGER NOT NULL DEFAULT 0"),
         ],
+        "file_touch": [("via_agent", "TEXT")],
+        "command_run": [("via_agent", "TEXT")],
         "progress_signal": [("state", "TEXT")],
         "session": [("tool", "TEXT NOT NULL DEFAULT 'claude'")],
         "prompt": [("tool", "TEXT NOT NULL DEFAULT 'claude'")],
@@ -386,6 +388,129 @@ def index_memory_files(con, resolver):
                     text[:4000], name)
             count += 1
     return count
+
+
+# ── 管線 G：子代理 ────────────────────────────────────────────────────────
+#
+# 216 MB 的 subagent transcript 裡，值得留的只有三樣：
+#   1. meta.json 的交辦內容（做什麼、哪種 agent、什麼模型）
+#   2. 最後一則 assistant 發言 —— 那就是回報給主線的結果
+#   3. 改過的檔案與跑過的指令 —— 這些是真實的產出，之前完全沒被索引，
+#      專案卡上的「改 N 檔」一直在少算
+# 中間過程（每一步的搜尋、讀檔、思考）不存，那才是那 200 MB 的來源。
+
+def subagent_files(session_dir):
+    return sorted(p for p in session_dir.rglob("agent-*.jsonl")
+                  if p.is_file() and "subagents" in p.parts)
+
+
+def _read_meta(path):
+    meta = path.with_name(path.stem + ".meta.json")
+    if not meta.is_file():
+        return {}
+    try:
+        got = json.loads(meta.read_text(encoding="utf-8", errors="replace"))
+        return got if isinstance(got, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def index_subagent(con, resolver, path, session_id, project_id):
+    """回傳 (是否有處理, 抽到的檔案編輯數)。"""
+    agent_id = path.stem
+    if scan_cursor(con, path) is None:
+        return False, 0
+
+    meta = _read_meta(path)
+    first_ts = last_ts = last_text = None
+    turns = tools = 0
+    files, commands = [], []
+    tok_in = tok_out = 0
+    offset = 0
+
+    for new_offset, rec in P.iter_jsonl(path, 0):
+        offset = new_offset
+        ts = rec.get("timestamp")
+        if ts:
+            first_ts = first_ts or ts
+            last_ts = ts
+        if rec.get("type") != "assistant":
+            continue
+        turns += 1
+        text = P.assistant_text(rec)
+        if text:
+            last_text = text
+        usage = rec.get("message", {}).get("usage") or {}
+        tok_in += usage.get("input_tokens") or 0
+        tok_out += usage.get("output_tokens") or 0
+        for name, params in P.tool_uses(rec):
+            tools += 1
+            if name in P.EDIT_TOOLS:
+                target = params.get("file_path") or params.get("notebook_path")
+                if target:
+                    files.append((ts, target, name))
+            elif name in ("Bash", "PowerShell"):
+                command = params.get("command")
+                if command:
+                    commands.append((ts, command))
+
+    con.execute("""
+        INSERT INTO subagent(agent_id, session_id, project_id, parent_agent_id,
+            agent_type, description, model, tool_use_id, spawn_depth, request_shape,
+            workflow_phase, started_at, ended_at, turn_count, tool_count, file_count,
+            input_tokens, output_tokens, result, path)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(agent_id) DO UPDATE SET
+            ended_at=excluded.ended_at, turn_count=excluded.turn_count,
+            tool_count=excluded.tool_count, file_count=excluded.file_count,
+            input_tokens=excluded.input_tokens, output_tokens=excluded.output_tokens,
+            result=excluded.result
+    """, (agent_id, session_id, project_id, meta.get("parentAgentId"),
+          meta.get("agentType"), meta.get("description"), meta.get("model"),
+          meta.get("toolUseId"), meta.get("spawnDepth"), meta.get("requestShape"),
+          meta.get("workflowPhase"), first_ts, last_ts, turns, tools,
+          len({f[1] for f in files}), tok_in or None, tok_out or None,
+          (last_text or "")[:8000] or None, str(path)))
+
+    # 子代理的產出併進主線的統計，但標記來源，需要時分得開
+    con.execute("DELETE FROM file_touch WHERE via_agent = ?", (agent_id,))
+    con.execute("DELETE FROM command_run WHERE via_agent = ?", (agent_id,))
+    for ts, target, verb in files:
+        con.execute(
+            "INSERT INTO file_touch(session_id, project_id, ts, path, verb, via_agent) "
+            "VALUES (?,?,?,?,?,?)", (session_id, project_id, ts, target, verb, agent_id))
+    for ts, command in commands:
+        con.execute(
+            "INSERT INTO command_run(session_id, project_id, ts, command, kind, via_agent) "
+            "VALUES (?,?,?,?,?,?)",
+            (session_id, project_id, ts, command[:2000],
+             P.classify_command(command), agent_id))
+        for message in P.extract_commit_messages(command):
+            con.execute(
+                "INSERT INTO commit_ref(session_id, project_id, ts, message) "
+                "VALUES (?,?,?,?)", (session_id, project_id, ts, message[:500]))
+
+    save_cursor(con, path, offset)
+    return True, len(files)
+
+
+def index_subagents(con, resolver):
+    """掃每個 session 目錄底下的 subagents/。回傳 (代理數, 檔案編輯數)。"""
+    if not PROJECTS.exists():
+        return 0, 0
+    agents = edits = 0
+    for session_dir in PROJECTS.glob("*/*/"):
+        if not (session_dir / "subagents").is_dir():
+            continue
+        session_id = session_dir.name
+        row = con.execute("SELECT project_id FROM session WHERE id = ?",
+                          (session_id,)).fetchone()
+        project_id = row["project_id"] if row else None
+        for path in subagent_files(session_dir):
+            done, n = index_subagent(con, resolver, path, session_id, project_id)
+            agents += done
+            edits += n
+    return agents, edits
 
 
 # ── 管線 E：Codex CLI ─────────────────────────────────────────────────────
@@ -794,6 +919,9 @@ def run(full=False):
         turns += index_transcript(con, resolver, path)
     con.commit()
 
+    agents, agent_edits = index_subagents(con, resolver)
+    con.commit()
+
     cx_prompts, cx_turns, cx_files = index_codex(con, resolver)
     con.commit()
 
@@ -806,7 +934,7 @@ def run(full=False):
 
     stats = {k: con.execute(f"SELECT COUNT(*) FROM {k}").fetchone()[0]
              for k in ("project", "session", "prompt", "turn", "file_touch",
-                       "commit_ref", "progress_signal")}
+                       "commit_ref", "progress_signal", "subagent")}
     stats["live_projects"] = con.execute(
         "SELECT COUNT(*) FROM project WHERE exists_on_disk = 1").fetchone()[0]
     con.close()
@@ -816,7 +944,9 @@ def run(full=False):
     print(f"索引完成 {time.time() - started:.2f}s  "
           f"(+{prompts} prompts, +{turns} turns, +{memories} memory 檔, "
           f"專案 +{appeared} / -{vanished}, 掃描 +{scanned} / 清孤兒 {orphans}, "
-          f"git repo {repos}{codex_note})")
+          f"git repo {repos}"
+          f"{f', 子代理 {agents} / 其改檔 {agent_edits}' if agents else ''}"
+          f"{codex_note})")
     print("  " + " · ".join(f"{k} {v}" for k, v in stats.items()))
     return stats
 

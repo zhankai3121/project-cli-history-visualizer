@@ -123,6 +123,24 @@ Server 每次提供專案清單時會順手 stat 一次資料夾，所以資料�
 | `type:"last-prompt"` | 最後一則真人 prompt |
 | `type:"cost-state"` | `totalLinesAdded` / `totalLinesRemoved` / `totalDuration` |
 
+### 子代理
+
+`projects/<slug>/<sessionId>/subagents/` 底下的 transcript 本機實測有 216 MB，
+是主 transcript 的 8 倍。**不整包索引** —— 只抽三樣：
+
+| 抽什麼 | 從哪來 |
+|---|---|
+| 交辦內容、agent 類型、模型 | `agent-<id>.meta.json` |
+| 回報給主線的結果 | 該 transcript 最後一則 assistant 發言 |
+| 改過的檔案、跑過的指令 | `tool_use` 區塊 |
+
+中間過程（每一步的搜尋、讀檔、思考）不存，那才是那 200 MB 的來源。
+
+子代理的產出會**併進主線統計但標記 `via_agent`**，需要時分得開。這個差距比預期大 ——
+本機一個專案改過的 555 個檔案裡，**516 個是子代理做的**，之前完全沒被計入。
+
+回報內容進 `subagent_fts`，搜尋的 `scope=agent` 可以單獨查。
+
 再疊上從 `tool_use` 算出來的硬事實：
 
 | 訊號 | 抽法 |

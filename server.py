@@ -104,6 +104,9 @@ def overview(include_gone: bool = False, include_containers: bool = False,
                p.is_system, p.has_history,
                (SELECT COUNT(*) FROM commit_ref c WHERE c.project_id = p.id) AS commits,
                (SELECT COUNT(DISTINCT path) FROM file_touch f WHERE f.project_id = p.id) AS files,
+               (SELECT COUNT(DISTINCT path) FROM file_touch f
+                 WHERE f.project_id = p.id AND f.via_agent IS NOT NULL) AS agent_files,
+               (SELECT COUNT(*) FROM subagent a WHERE a.project_id = p.id) AS agents,
                (SELECT COUNT(*) FROM session s
                  WHERE s.project_id = p.id AND s.transcript_state = 'live') AS live_sessions,
                (SELECT GROUP_CONCAT(DISTINCT s.tool) FROM session s
@@ -207,6 +210,11 @@ def session_detail(session_id: str):
             "SELECT kind, goal, state, next_step, origin, ts, "
             "substr(body,1,1200) AS body "
             "FROM progress_signal WHERE session_id = ? ORDER BY ts", (session_id,))),
+        "subagents": rows(con.execute(
+            "SELECT agent_id, agent_type, description, model, spawn_depth, "
+            "turn_count, tool_count, file_count, input_tokens, output_tokens, "
+            "started_at, substr(result,1,4000) AS result "
+            "FROM subagent WHERE session_id = ? ORDER BY started_at", (session_id,))),
     }
     con.close()
     return payload
@@ -226,16 +234,19 @@ def search(q: str = Query(..., min_length=1), limit: int = 80,
     use_fts = len(term) >= 3
     modes = set()
 
-    def fetch(sql_fts, sql_like, params_extra=()):
+    def fetch(sql_fts, sql_like, like_twice=False):
+        """FTS 撲空或查詢太短就退回 LIKE。like_twice 給有兩個 LIKE 佔位的查詢。"""
         if use_fts:
             try:
-                got = rows(con.execute(sql_fts, (phrase, limit, *params_extra)))
+                got = rows(con.execute(sql_fts, (phrase, limit)))
                 if got:
                     modes.add("fts")
                     return got
             except sqlite3.OperationalError:
                 pass
-        got = rows(con.execute(sql_like, (like_pattern(term), limit, *params_extra)))
+        pattern = like_pattern(term)
+        args = (pattern, pattern, limit) if like_twice else (pattern, limit)
+        got = rows(con.execute(sql_like, args))
         if got:
             modes.add("like")
         return got
@@ -281,12 +292,35 @@ def search(q: str = Query(..., min_length=1), limit: int = 80,
             ORDER BY t.ts DESC LIMIT ?
         """)
 
+    if scope in ("all", "agent"):
+        # 子代理的回報常常是整份研究結果，主線只留了摘要 —— 值得能搜到
+        hits += fetch("""
+            SELECT 'agent' AS kind, a.id, a.session_id, a.project_id,
+                   COALESCE(a.ended_at, a.started_at) AS ts,
+                   COALESCE(a.result, a.description) AS text, 0 AS is_slash,
+                   pr.display_name, a.description AS title
+            FROM subagent_fts f
+            JOIN subagent a ON a.id = f.rowid
+            LEFT JOIN project pr ON pr.id = a.project_id
+            WHERE subagent_fts MATCH ? ORDER BY rank LIMIT ?
+        """, """
+            SELECT 'agent' AS kind, a.id, a.session_id, a.project_id,
+                   COALESCE(a.ended_at, a.started_at) AS ts,
+                   COALESCE(a.result, a.description) AS text, 0 AS is_slash,
+                   pr.display_name, a.description AS title
+            FROM subagent a
+            LEFT JOIN project pr ON pr.id = a.project_id
+            WHERE a.result LIKE ? ESCAPE '\\' OR a.description LIKE ? ESCAPE '\\'
+            ORDER BY a.ended_at DESC LIMIT ?
+        """, like_twice=True)
+
     hits.sort(key=lambda h: h["ts"] or "", reverse=True)
     con.close()
     return {"mode": "+".join(sorted(modes)) or "none", "query": term,
             "scope": scope, "count": len(hits),
             "prompts": sum(1 for h in hits if h["kind"] == "prompt"),
             "replies": sum(1 for h in hits if h["kind"] == "reply"),
+            "agents": sum(1 for h in hits if h["kind"] == "agent"),
             "hits": hits[:limit * 2]}
 
 

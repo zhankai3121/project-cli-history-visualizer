@@ -177,6 +177,16 @@ h3:first-child{margin-top:0}
      overflow-wrap:anywhere}
 .hit:hover{border-color:var(--accent)}
 .hit.reply{border-left:3px solid var(--dim)}
+.hit.agent{border-left:3px solid var(--accent)}
+.agent{border:1px solid var(--line); border-radius:var(--radius);
+       padding:.35em .55em; margin-bottom:.35em}
+.agent > summary{cursor:pointer; list-style:none; display:flex; gap:.4em;
+                 flex-wrap:wrap; align-items:baseline}
+.agent > summary::-webkit-details-marker{display:none}
+.agent > summary::before{content:"▸"; color:var(--dim); font-size:.7rem}
+.agent[open] > summary::before{content:"▾"}
+.agent > summary b{font-size:.78rem; font-weight:600}
+.agent .said{margin-top:.5em; max-height:22em; overflow:auto}
 .hit .w{font-size:.64rem; color:var(--dim); margin-bottom:.2em}
 .scopebar{display:flex; gap:.35em; align-items:center; margin:.45em 0}
 .scopebar button{font-size:.7rem; padding:.25em .7em; border-radius:999px}
@@ -596,14 +606,12 @@ function highlight(text, q) {
 }
 
 function hitList(hits, q, stamp = h => date(h.ts)) {
-  return hits.map(h => {
-    const reply = h.kind === "reply";
-    return `
-    <div class="hit${reply ? " reply" : ""}" data-p="${h.project_id}" data-s="${esc(h.session_id)}">
-      <div class="w">${reply ? "↩ 回覆 · " : ""}${esc(h.display_name || "?")} › ${esc(h.title || h.session_id.slice(0, 8))} · ${stamp(h)}</div>
+  const MARK = { reply: "↩ 回覆 · ", agent: "⚙ 子代理 · " };
+  return hits.map(h => `
+    <div class="hit${h.kind !== "prompt" ? " " + h.kind : ""}" data-p="${h.project_id}" data-s="${esc(h.session_id)}">
+      <div class="w">${MARK[h.kind] || ""}${esc(h.display_name || "?")} › ${esc(h.title || h.session_id.slice(0, 8))} · ${stamp(h)}</div>
       <div>${highlight((h.text || "").slice(0, 300), q)}</div>
-    </div>`;
-  }).join("") || '<p class="empty">沒有命中。</p>';
+    </div>`).join("") || '<p class="empty">沒有命中。</p>';
 }
 
 async function copy(text, btn) {
@@ -713,7 +721,8 @@ function card(p) {
   const bits = [
     `${p.prompt_count} prompts`, `${p.session_count} sessions`,
     p.commits ? `${p.commits} commits` : null,
-    p.files ? `改 ${p.files} 檔` : null,
+    p.files ? `改 ${p.files} 檔${p.agent_files ? `（${p.agent_files} 由子代理）` : ""}` : null,
+    p.agents ? `${p.agents} 個子代理` : null,
     tools.length > 1 ? tools.map(t => TOOL_LABEL[t] || t).join(" + ")
                      : (tools[0] === "codex" ? TOOL_LABEL.codex : null),
   ].filter(Boolean).join(" · ");
@@ -799,6 +808,19 @@ async function openSession(id) {
         <b>來源</b><span class="src">${esc(s.origin)} · ${date(s.ts)}</span>
       </div>`).join("") : ""}
 
+    ${d.subagents?.length ? `<h3>子代理 (${d.subagents.length})</h3>` +
+      d.subagents.map(a => `
+        <details class="agent">
+          <summary>
+            <b>${esc(a.description || a.agent_type || a.agent_id)}</b>
+            <span class="src">${esc(a.agent_type || "")}${a.model ? " · " + esc(a.model) : ""}
+              · ${a.turn_count} turns · ${a.tool_count} 工具${a.file_count ? ` · 改 ${a.file_count} 檔` : ""}${
+                a.output_tokens ? ` · ${Math.round((a.input_tokens + a.output_tokens) / 1000)}k tok` : ""}</span>
+          </summary>
+          <div class="said">${esc((a.result || "（沒有回報內容）").slice(0, 2000))}${
+            (a.result || "").length > 2000 ? "…" : ""}</div>
+        </details>`).join("") : ""}
+
     ${d.commits.length ? `<h3>commits</h3>` +
       d.commits.map(c => `<div class="tag">${esc(c.message)}</div>`).join(" ") : ""}
 
@@ -872,6 +894,7 @@ async function runSearch(raw) {
       <button data-scope="all"    aria-pressed="${on("all")}">全部 ${d.count}</button>
       <button data-scope="prompt" aria-pressed="${on("prompt")}">我的 prompt ${d.prompts}</button>
       <button data-scope="reply"  aria-pressed="${on("reply")}">Claude 回覆 ${d.replies}</button>
+      <button data-scope="agent"  aria-pressed="${on("agent")}">子代理回報 ${d.agents ?? 0}</button>
     </div>
     <p class="note">「${esc(term)}」${hits.length} 筆${scope ? `（限 @${esc(scope)}）` : ""}
       <span class="src">· ${d.mode.includes("like")

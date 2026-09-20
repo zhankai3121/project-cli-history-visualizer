@@ -87,7 +87,8 @@ CREATE TABLE IF NOT EXISTS file_touch (
     project_id INTEGER REFERENCES project(id),
     ts         TEXT,
     path       TEXT NOT NULL,
-    verb       TEXT NOT NULL                         -- Edit | Write | NotebookEdit
+    verb       TEXT NOT NULL,                        -- Edit | Write | NotebookEdit
+    via_agent  TEXT                                  -- NULL=主線；否則是 agent_id
 );
 CREATE INDEX IF NOT EXISTS ix_touch_project ON file_touch(project_id, path);
 
@@ -97,8 +98,36 @@ CREATE TABLE IF NOT EXISTS command_run (
     project_id INTEGER REFERENCES project(id),
     ts         TEXT,
     command    TEXT NOT NULL,
-    kind       TEXT                                  -- git | test | build | install | other
+    kind       TEXT,                                 -- git | test | build | install | other
+    via_agent  TEXT
 );
+
+-- 子代理。只存聚合值與最後回報，不存中間過程（那是 200 MB 的雜訊）
+CREATE TABLE IF NOT EXISTS subagent (
+    id              INTEGER PRIMARY KEY,
+    agent_id        TEXT NOT NULL UNIQUE,
+    session_id      TEXT NOT NULL,
+    project_id      INTEGER REFERENCES project(id),
+    parent_agent_id TEXT,                            -- 巢狀子代理
+    agent_type      TEXT,
+    description     TEXT,                            -- 交辦內容
+    model           TEXT,
+    tool_use_id     TEXT,                            -- 對回主線的 Agent tool_use.id
+    spawn_depth     INTEGER,
+    request_shape   TEXT,
+    workflow_phase  TEXT,
+    started_at      TEXT,
+    ended_at        TEXT,
+    turn_count      INTEGER NOT NULL DEFAULT 0,
+    tool_count      INTEGER NOT NULL DEFAULT 0,
+    file_count      INTEGER NOT NULL DEFAULT 0,
+    input_tokens    INTEGER,
+    output_tokens   INTEGER,
+    result          TEXT,                            -- 回報給主線的最後一則發言
+    path            TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_subagent_session ON subagent(session_id);
+CREATE INDEX IF NOT EXISTS ix_subagent_project ON subagent(project_id);
 
 CREATE TABLE IF NOT EXISTS commit_ref (
     id         INTEGER PRIMARY KEY,
@@ -146,6 +175,25 @@ END;
 CREATE TRIGGER IF NOT EXISTS prompt_au AFTER UPDATE ON prompt BEGIN
     INSERT INTO prompt_fts(prompt_fts, rowid, text) VALUES ('delete', old.id, old.text);
     INSERT INTO prompt_fts(rowid, text) VALUES (new.id, new.text);
+END;
+
+CREATE VIRTUAL TABLE IF NOT EXISTS subagent_fts
+    USING fts5(description, result, content='subagent', content_rowid='id',
+               tokenize='trigram');
+
+CREATE TRIGGER IF NOT EXISTS subagent_ai AFTER INSERT ON subagent BEGIN
+    INSERT INTO subagent_fts(rowid, description, result)
+    VALUES (new.id, new.description, new.result);
+END;
+CREATE TRIGGER IF NOT EXISTS subagent_ad AFTER DELETE ON subagent BEGIN
+    INSERT INTO subagent_fts(subagent_fts, rowid, description, result)
+    VALUES ('delete', old.id, old.description, old.result);
+END;
+CREATE TRIGGER IF NOT EXISTS subagent_au AFTER UPDATE ON subagent BEGIN
+    INSERT INTO subagent_fts(subagent_fts, rowid, description, result)
+    VALUES ('delete', old.id, old.description, old.result);
+    INSERT INTO subagent_fts(rowid, description, result)
+    VALUES (new.id, new.description, new.result);
 END;
 
 CREATE VIRTUAL TABLE IF NOT EXISTS turn_fts
