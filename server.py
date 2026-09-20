@@ -92,7 +92,7 @@ def overview(include_gone: bool = False, include_containers: bool = False,
     if not include_gone:
         clauses.append("p.exists_on_disk = 1")
     if not include_containers:
-        clauses.append("p.is_container = 0")
+        clauses.append("p.is_container = 0 AND p.is_system = 0")
     if only_history:
         clauses.append("p.has_history = 1")
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
@@ -101,7 +101,7 @@ def overview(include_gone: bool = False, include_containers: bool = False,
                p.session_count, p.prompt_count, p.exists_on_disk, p.is_git,
                p.vanished_at, p.git_branch, p.git_last_ts, p.git_last_msg,
                p.git_dirty, p.git_commits, p.is_container, p.is_scanned,
-               p.has_history,
+               p.is_system, p.has_history,
                (SELECT COUNT(*) FROM commit_ref c WHERE c.project_id = p.id) AS commits,
                (SELECT COUNT(DISTINCT path) FROM file_touch f WHERE f.project_id = p.id) AS files,
                (SELECT COUNT(*) FROM session s

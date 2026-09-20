@@ -28,7 +28,9 @@ CREATE TABLE IF NOT EXISTS project (
     -- 容器目錄（專案根本身與其祖先），不是專案。UI 預設隱藏
     is_container   INTEGER NOT NULL DEFAULT 0,
     -- 由資料夾掃描發現（可能從未跑過 CLI）
-    is_scanned     INTEGER NOT NULL DEFAULT 0
+    is_scanned     INTEGER NOT NULL DEFAULT 0,
+    -- 作業系統目錄（C:\Windows、/usr…），不是專案
+    is_system      INTEGER NOT NULL DEFAULT 0
 );
 
 -- 設定（目前只存 project_roots）

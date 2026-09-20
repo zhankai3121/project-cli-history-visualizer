@@ -16,6 +16,7 @@ import argparse
 import datetime as dt
 import json
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -99,6 +100,7 @@ def migrate(con):
             ("git_commits", "INTEGER"),
             ("is_container", "INTEGER NOT NULL DEFAULT 0"),
             ("is_scanned", "INTEGER NOT NULL DEFAULT 0"),
+            ("is_system", "INTEGER NOT NULL DEFAULT 0"),
         ],
         "progress_signal": [("state", "TEXT")],
     }
@@ -417,6 +419,28 @@ def set_roots(con, roots):
     return clean
 
 
+# 系統目錄：在這些地方跑過 CLI 會生出看起來像專案的卡片（例如從 system32
+# 開的終端機）。不是專案，UI 預設隱藏。
+_SYS_WIN = re.compile(
+    r"^[a-z]:/(windows|program files( \(x86\))?|programdata|"
+    r"\$recycle\.bin|system volume information|perflogs)(/|$)")
+_SYS_NIX = re.compile(
+    r"^/(usr|etc|bin|sbin|lib|lib64|var|opt|proc|sys|dev|boot|run|srv|snap|"
+    r"tmp|lost\+found)(/|$)")
+# WSL 的 UNC 前綴：\\wsl.localhost\<發行版> 或 \\wsl$\<發行版>
+_WSL_PREFIX = re.compile(r"^//wsl(\.localhost|\$)/[^/]+")
+
+
+def is_system_path(real_path):
+    """這個路徑是不是作業系統自己的目錄。"""
+    path = str(real_path).replace("\\", "/").lower().rstrip("/")
+    if _SYS_WIN.match(path):
+        return True
+    # WSL 裡的 /usr、/etc… 也算；把 UNC 前綴剝掉再比
+    inside = _WSL_PREFIX.sub("", path)
+    return bool(_SYS_NIX.match(inside if inside.startswith("/") else path))
+
+
 def is_container(real_path, roots):
     """任何一個根目錄本身，或它的祖先目錄 → 容器，不是專案。"""
     here = str(real_path).rstrip("\\/").lower()
@@ -515,8 +539,9 @@ def sync_disk_projects(con):
     appeared = 0
     for row in con.execute("SELECT id, real_path FROM project").fetchall():
         path = Path(row["real_path"])
-        con.execute("UPDATE project SET is_container = ? WHERE id = ?",
-                    (int(is_container(row["real_path"], roots)), row["id"]))
+        con.execute("UPDATE project SET is_container = ?, is_system = ? WHERE id = ?",
+                    (int(is_container(row["real_path"], roots)),
+                     int(is_system_path(row["real_path"])), row["id"]))
         alive = path.is_dir()
         if alive:
             if row["real_path"] not in before:

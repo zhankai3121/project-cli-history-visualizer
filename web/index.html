@@ -86,6 +86,18 @@ main{padding:.7em .85em 1.2em}
 }
 .chip[aria-pressed="true"]{background:var(--accent); border-color:var(--accent); color:var(--on-accent)}
 .grid{display:grid; gap:.6em; grid-template-columns:repeat(auto-fill,minmax(20rem,1fr))}
+.grouped{display:flex; flex-direction:column; gap:1.1em}
+.fgroup > summary{
+  cursor:pointer; list-style:none; padding:.3em .1em; margin-bottom:.5em;
+  border-bottom:1px solid var(--line); display:flex; gap:.5em; align-items:baseline;
+}
+.fgroup > summary::-webkit-details-marker{display:none}
+.fgroup > summary::before{content:"▾"; color:var(--dim); font-size:.7rem}
+.fgroup:not([open]) > summary::before{content:"▸"}
+.fgroup > summary b{font-size:.82rem; font-weight:600}
+.fgroup > summary .path{font-size:.6rem; color:var(--dim); font-family:ui-monospace,monospace;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1}
+.fgroup > summary .n{font-size:.62rem; color:var(--dim); white-space:nowrap}
 .card{
   background:var(--card-bg); border:var(--border-w) solid var(--line);
   border-radius:var(--radius); backdrop-filter:var(--blur);
@@ -372,11 +384,16 @@ kbd{font:.58rem/1 ui-monospace,monospace; border:1px solid var(--line); border-b
 <header>
   <h1>CLI History <small id="tally"></small></h1>
   <input id="q" placeholder="搜尋所有 prompt（2 字中文也可以，@專案名 可限定範圍）…" autocomplete="off">
-  <select id="sort">
+  <select id="sort" title="排序">
     <option value="recent">最近活動</option>
     <option value="stale">停滯最久</option>
     <option value="flags">紅旗優先</option>
     <option value="volume">prompt 量</option>
+  </select>
+  <select id="group" title="分組">
+    <option value="none">不分組</option>
+    <option value="folder">依資料夾</option>
+    <option value="light">依 git 狀態</option>
   </select>
   <button id="folders" title="設定要掃描的專案資料夾">📁 資料夾</button>
   <select id="skin" title="外觀主題">
@@ -406,7 +423,7 @@ kbd{font:.58rem/1 ui-monospace,monospace; border:1px solid var(--line); border-b
       <button class="chip" data-f="flags" aria-pressed="false">有紅旗</button>
       <button class="chip" data-f="evap" aria-pressed="false">過程已蒸發</button>
       <button class="chip" data-f="gone" aria-pressed="false">顯示已刪除的專案</button>
-      <button class="chip" data-f="container" aria-pressed="false">顯示容器目錄</button>
+      <button class="chip" data-f="container" aria-pressed="false">顯示非專案路徑</button>
       <button class="chip" data-f="onlyhist" aria-pressed="false">只看有 CLI 紀錄</button>
       <button class="chip" id="feed">最近動態 →</button>
     </div>
@@ -454,7 +471,8 @@ const esc = s => (s ?? "").replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"
 const DAY = 864e5;
 
 let STATE = { projects: [], filters: new Set(), sort: "recent", query: "",
-              searchScope: "all", lastRaw: "" };
+              searchScope: "all", lastRaw: "", group: "none",
+              collapsed: new Set() };
 
 const LIGHT = {
   green:  "綠燈：最後一次 commit 在最後一則 prompt 之後，已落實",
@@ -553,9 +571,55 @@ function renderGrid() {
     volume: (a, b) => b.prompt_count - a.prompt_count,
   };
   const list = STATE.projects.filter(passes).sort(sorters[STATE.sort]);
-  $("#grid").innerHTML = list.length
-    ? list.map(card).join("")
-    : `<p class="empty">沒有符合的專案。</p>`;
+  const grid = $("#grid");
+
+  if (!list.length) {
+    grid.className = "";
+    grid.innerHTML = `<p class="empty">沒有符合的專案。</p>`;
+    return;
+  }
+  if (STATE.group === "none") {
+    grid.className = "grid";
+    grid.innerHTML = list.map(card).join("");
+    return;
+  }
+
+  grid.className = "grouped";
+  const buckets = new Map();
+  for (const p of list) {
+    const k = STATE.group === "folder" ? parentDir(p.real_path)
+                                       : (p.light || "none");
+    if (!buckets.has(k)) buckets.set(k, []);
+    buckets.get(k).push(p);
+  }
+  // 專案多的群組排前面；同數量時照名稱
+  const order = [...buckets.entries()].sort((a, b) =>
+    b[1].length - a[1].length || a[0].localeCompare(b[0]));
+
+  grid.innerHTML = order.map(([key, items]) => {
+    const open = STATE.collapsed.has(key) ? "" : " open";
+    return `<details class="fgroup"${open} data-key="${esc(key)}">
+      <summary>
+        <b>${esc(groupLabel(key))}</b>
+        ${STATE.group === "folder" ? `<span class="path">${esc(key)}</span>` : "<span class='path'></span>"}
+        <span class="n">${items.length}</span>
+      </summary>
+      <div class="grid">${items.map(card).join("")}</div>
+    </details>`;
+  }).join("");
+}
+
+/* 取上層資料夾當分組鍵。用 regex 砍最後一段，UNC 的前置 \\ 才不會被吃掉 */
+const parentDir = path => path.replace(/[\\/][^\\/]+$/, "") || path;
+
+const LIGHT_GROUP = { green: "🟢 已落實", yellow: "🟡 有未提交的變更",
+                      grey: "⚪ commit 沒跟上", none: "— 無從判斷" };
+
+function groupLabel(key) {
+  if (STATE.group === "light") return LIGHT_GROUP[key] || key;
+  const parts = key.split(/[\\/]/).filter(Boolean);
+  const tail = parts.slice(-2).join(" / ");
+  return key.startsWith("\\\\") ? "WSL · " + tail : (tail || key);
 }
 
 function card(p) {
@@ -579,7 +643,7 @@ function card(p) {
 
   return `<article class="${cls.join(" ")}" data-id="${p.id}">
     <h2><span><i class="dot ${p.light || "none"}" title="${esc(lightTitle(p))}"></i>${esc(p.display_name)}</span>
-        <em>${p.is_container ? "📁 容器 · " : ""}${p.has_history ? "" : "📂 無 CLI 紀錄 · "}${p.exists_on_disk ? "" : "🗑 已刪除 · "}${ago(p.last_seen)}</em></h2>
+        <em>${p.is_system ? "⚙ 系統目錄 · " : p.is_container ? "📁 容器 · " : ""}${p.has_history ? "" : "📂 無 CLI 紀錄 · "}${p.exists_on_disk ? "" : "🗑 已刪除 · "}${ago(p.last_seen)}</em></h2>
     ${body ? `<div class="rows">${body}</div>`
            : `<p class="empty">尚無可抽取的進度訊號</p>`}
     <div class="meta">
@@ -797,6 +861,20 @@ document.querySelectorAll(".chip").forEach(chip => {
 
 $("#sort").onchange = e => { STATE.sort = e.target.value; renderGrid(); };
 
+$("#group").onchange = e => {
+  STATE.group = e.target.value;
+  try { localStorage.setItem("clihv-group", STATE.group); } catch {}
+  renderGrid();
+};
+
+// 記住哪些群組被收合（用 toggle 事件，details 自己管開關）
+$("#grid").addEventListener("toggle", e => {
+  const el = e.target.closest?.(".fgroup");
+  if (!el) return;
+  el.open ? STATE.collapsed.delete(el.dataset.key)
+          : STATE.collapsed.add(el.dataset.key);
+}, true);
+
 $("#reindex").onclick = async () => {
   $("#reindex").textContent = "…";
   await fetch("/api/reindex", { method: "POST" });
@@ -952,6 +1030,8 @@ try {
   if (fs) setFontSize(fs);
   const skin = localStorage.getItem("clihv-skin");
   if (skin) setSkin(skin);
+  const group = localStorage.getItem("clihv-group");
+  if (group) { STATE.group = group; $("#group").value = group; }
 } catch {}
 
 loadOverview();

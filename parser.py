@@ -207,9 +207,12 @@ def parse_away_summary(content):
     cut = matches[-1]
     state = text[:cut.start()].strip(" 。，、\n") or None
     marker = cut.group(0)
-    tail = text[cut.start():].strip()
     if marker.startswith("下一步"):            # 這幾個字本身沒資訊，剝掉
-        tail = text[cut.end():].strip(" 。，、\n")
+        # 只剝開頭的標點與兩端空白，句尾的「。」要留著 —— 其他轉折詞
+        # （接下來／現在只差…）走的是下面那條，不剝尾，兩邊要一致
+        tail = text[cut.end():].lstrip(" 。，、：:\n").rstrip()
+    else:
+        tail = text[cut.start():].strip()
     return None, state, tail or None
 
 
