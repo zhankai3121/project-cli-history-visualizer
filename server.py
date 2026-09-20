@@ -675,6 +675,7 @@ def project_timeline(project_id: int, limit: int = Query(200, ge=1, le=1000)):
     if con.execute("SELECT 1 FROM project WHERE id = ?", (project_id,)).fetchone() is None:
         con.close()
         raise HTTPException(404, "no such project")
+    # 超過 limit 時砍最舊的，不是最新的：先取最新 N 筆再反轉成由舊到新
     items = rows(con.execute("""
         SELECT g.ts, g.kind, g.origin, g.session_id, s.title,
                g.goal, g.state, g.next_step
@@ -682,9 +683,10 @@ def project_timeline(project_id: int, limit: int = Query(200, ge=1, le=1000)):
         WHERE g.project_id = ?
           AND g.kind IN ('away_summary', 'compact_summary', 'memory_file')
           AND (g.goal IS NOT NULL OR g.state IS NOT NULL OR g.next_step IS NOT NULL)
-        ORDER BY g.ts LIMIT ?
+        ORDER BY g.ts DESC LIMIT ?
     """, (project_id, limit)))
     con.close()
+    items.reverse()
     return {"items": items}
 
 
