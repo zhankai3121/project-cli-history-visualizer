@@ -862,6 +862,7 @@ async function openSession(id) {
   $("#sesspane").innerHTML = `
     <div class="actions">
       <button data-resume="${esc(id)}">複製 claude --resume</button>
+      <button data-export="${esc(id)}">匯出 Markdown</button>
       <span class="src" style="align-self:center">${esc(id)}</span>
     </div>
     ${signals.length ? `<h3>進度訊號</h3>` + signals.map(s => `
@@ -901,6 +902,8 @@ async function openSession(id) {
   $("#sesspane .actions").onclick = e => {
     const sid = e.target.dataset.resume;
     if (sid) copy(`claude --resume ${sid}`, e.target);
+    if (e.target.dataset.export)
+      location.href = "/api/session/" + encodeURIComponent(e.target.dataset.export) + "/export.md";
   };
   const pane = $("#sesspane");
   pane.scrollTop = 0;

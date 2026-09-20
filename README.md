@@ -190,6 +190,7 @@ Server 每次提供專案清單時會順手 stat 一次資料夾，所以資料�
 | 找「大概八月中那次」 | 底部熱度圖點那一天 |
 | 回到總覽 | <kbd>Esc</kbd> |
 | 續接某次對話 | session 詳情 → 複製 `claude --resume <id>` |
+| 匯出交接文件 | session 詳情 → `匯出 Markdown`（下載 `session-<id>.md`） |
 | 開專案 | 專案頁 → 在 VS Code 開啟 |
 | 設定專案資料夾 | 標頭 `📁 資料夾` |
 | 字級調整 | 標頭 `A−` / `A+`（倍率 0.7–2.0，存 localStorage） |
@@ -411,6 +412,7 @@ jsonl 是 append-only，所以 `scan_state` 記錄每個檔案的 `(mtime, size,
 | `GET /api/browse?path=` | 列出某目錄的子目錄（`{name, path}`，路徑由後端拼）。**只回目錄名稱，不讀任何檔案內容**；`path` 留空時 Windows 回磁碟機 + 執行中的 WSL 發行版 |
 | `GET /api/project/{id}` | 專案詳情 + session 列表 |
 | `GET /api/session/{id}` | prompt / turn / 改檔 / 指令 / commit / 進度訊號 |
+| `GET /api/session/{id}/export.md` | 整份 session 匯出成 Markdown（附件下載，交接用） |
 | `GET /api/search?q=&limit=` | 全文搜尋（FTS5，短查詢自動退回 LIKE） |
 | `GET /api/recent?limit=` | 跨專案最近動態 |
 | `GET /api/heatmap` | 每日 prompt 數 |
