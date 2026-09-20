@@ -280,6 +280,8 @@ kbd{font:.58rem/1 ui-monospace,monospace; border:1px solid var(--line); border-b
 
 
 /* @F8-css */
+/* 日期輸入預設吃 font:inherit（1rem），擺在 .7rem 的 pill 旁邊會突然變很大 */
+.scopebar input[type="date"]{font-size:.7rem; padding:.22em .4em}
 
 
 /* @F9-css */
@@ -666,12 +668,13 @@ function highlight(text, q) {
   return safe.replace(new RegExp(needle, "gi"), m => `<mark>${m}</mark>`);
 }
 
+/* h.snippet 是後端做好的片段：那邊已經先 esc 再包 <mark>，這裡不能再 esc 一次 */
 function hitList(hits, q, stamp = h => date(h.ts)) {
   const MARK = { reply: "↩ 回覆 · ", agent: "⚙ 子代理 · " };
   return hits.map(h => `
     <div class="hit${h.kind !== "prompt" ? " " + h.kind : ""}" data-p="${h.project_id}" data-s="${esc(h.session_id)}">
       <div class="w">${MARK[h.kind] || ""}${esc(h.display_name || "?")} › ${esc(h.title || h.session_id.slice(0, 8))} · ${stamp(h)}</div>
-      <div>${highlight((h.text || "").slice(0, 300), q)}</div>
+      <div>${h.snippet || highlight((h.text || "").slice(0, 300), q)}</div>
     </div>`).join("") || '<p class="empty">沒有命中。</p>';
 }
 
@@ -948,7 +951,10 @@ async function runSearch(raw) {
   }
 
   const d = await api("/api/search?q=" + encodeURIComponent(term)
-                      + "&scope=" + STATE.searchScope);
+                      + "&scope=" + STATE.searchScope
+                      + "&since=" + encodeURIComponent(SEARCH.since)
+                      + "&until=" + encodeURIComponent(SEARCH.until)
+                      + "&slash=" + SEARCH.slash);
   let hits = d.hits;
   if (scope) hits = hits.filter(h =>
     (h.display_name || "").toLowerCase().includes(scope.toLowerCase()));
@@ -963,6 +969,10 @@ async function runSearch(raw) {
       <button data-scope="prompt" aria-pressed="${on("prompt")}">我的 prompt ${d.prompts}</button>
       <button data-scope="reply"  aria-pressed="${on("reply")}">Claude 回覆 ${d.replies}</button>
       <button data-scope="agent"  aria-pressed="${on("agent")}">子代理回報 ${d.agents ?? 0}</button>
+      <input type="date" id="since" title="從這天起" value="${SEARCH.since}">
+      <input type="date" id="until" title="到這天止（含當天）" value="${SEARCH.until}">
+      <button data-slash aria-pressed="${SEARCH.slash !== "all"}"
+              title="/ 指令：全部 → 只看 → 排除">${SLASH_LABEL[SEARCH.slash]}</button>
     </div>
     <p class="note">「${esc(term)}」${hits.length} 筆${scope ? `（限 @${esc(scope)}）` : ""}
       <span class="src">· ${d.mode.includes("like")
@@ -970,10 +980,13 @@ async function runSearch(raw) {
     ${hitList(hits, term)}`;
   $("#results .scopebar").onclick = e => {
     const b = e.target.closest("[data-scope]");
-    if (!b) return;
-    STATE.searchScope = b.dataset.scope;
+    if (b) { STATE.searchScope = b.dataset.scope; runSearch(STATE.lastRaw); return; }
+    if (!e.target.closest("[data-slash]")) return;
+    SEARCH.slash = SLASH_NEXT[SEARCH.slash];
     runSearch(STATE.lastRaw);
   };
+  for (const el of [$("#since"), $("#until")])
+    el.onchange = () => { SEARCH[el.id] = el.value; runSearch(STATE.lastRaw); };
 }
 
 $("#results").addEventListener("click", e => {
@@ -1038,6 +1051,10 @@ $("#feed").onclick = async () => {
 
 
 /* @F8-js */
+/* 搜尋的額外條件。獨立於 STATE，scopebar 每次重繪都從這裡把值填回去。 */
+let SEARCH = { since: "", until: "", slash: "all" };
+const SLASH_LABEL = { all: "/ 指令", only: "只看 /", exclude: "排除 /" };
+const SLASH_NEXT = { all: "only", only: "exclude", exclude: "all" };
 
 
 /* @F9-js */

@@ -222,31 +222,53 @@ def session_detail(session_id: str):
 
 @app.get("/api/search")
 def search(q: str = Query(..., min_length=1), limit: int = 80,
-           scope: str = "all"):
-    """搜尋 prompt 與 assistant 回覆。scope: all | prompt | reply
+           scope: str = "all", since: str = "", until: str = "",
+           slash: str = "all"):
+    """搜尋 prompt 與 assistant 回覆。scope: all | prompt | reply | agent
 
     FTS5 trigram；2 字以下（或 FTS 撲空）自動退回 LIKE。trigram 對 <3 字元
     的查詢是「靜默回 0 筆」而不是報錯，所以 fallback 不是最佳化，是正確性要求。
+
+    since / until 都是 YYYY-MM-DD，until 含當天；slash = all | only | exclude，
+    only 時 reply / agent 兩個範圍本來就不可能有東西，直接跳過不查。
     """
     term = q.strip()
+    since, until = day_arg(since), day_arg(until)
+    if slash not in ("all", "only", "exclude"):
+        slash = "all"
     con = db()
     phrase = '"' + term.replace('"', '""') + '"'
     use_fts = len(term) >= 3
     modes = set()
 
-    def fetch(sql_fts, sql_like, like_twice=False):
+    def cond(ts_expr, slash_col=None):
+        """日期 / slash 的 WHERE 片段 -> (SQL, 參數)。空值在這裡擋掉，不進 SQL。"""
+        sql, args = "", []
+        if since:
+            sql += f" AND {ts_expr} >= ?"
+            args.append(since)
+        if until:                     # 含當天 -> 比到隔天 00:00
+            sql += f" AND {ts_expr} < date(?, '+1 day')"
+            args.append(until)
+        if slash_col and slash != "all":
+            sql += f" AND {slash_col} = ?"
+            args.append(1 if slash == "only" else 0)
+        return sql, tuple(args)
+
+    def fetch(sql_fts, sql_like, where, like_twice=False):
         """FTS 撲空或查詢太短就退回 LIKE。like_twice 給有兩個 LIKE 佔位的查詢。"""
+        w, wargs = where
         if use_fts:
             try:
-                got = rows(con.execute(sql_fts, (phrase, limit)))
+                got = rows(con.execute(sql_fts.format(w=w), (phrase, *wargs, limit)))
                 if got:
                     modes.add("fts")
                     return got
             except sqlite3.OperationalError:
                 pass
         pattern = like_pattern(term)
-        args = (pattern, pattern, limit) if like_twice else (pattern, limit)
-        got = rows(con.execute(sql_like, args))
+        head = (pattern, pattern) if like_twice else (pattern,)
+        got = rows(con.execute(sql_like.format(w=w), (*head, *wargs, limit)))
         if got:
             modes.add("like")
         return got
@@ -255,32 +277,34 @@ def search(q: str = Query(..., min_length=1), limit: int = 80,
     if scope in ("all", "prompt"):
         hits += fetch("""
             SELECT 'prompt' AS kind, p.id, p.session_id, p.project_id, p.ts,
-                   p.text, p.is_slash, pr.display_name, s.title
+                   p.text, p.is_slash, pr.display_name, s.title,
+                   snippet(prompt_fts, 0, char(2), char(3), '…', 24) AS snip
             FROM prompt_fts f
             JOIN prompt p ON p.id = f.rowid
             LEFT JOIN project pr ON pr.id = p.project_id
             LEFT JOIN session s ON s.id = p.session_id
-            WHERE prompt_fts MATCH ? ORDER BY rank LIMIT ?
+            WHERE prompt_fts MATCH ?{w} ORDER BY rank LIMIT ?
         """, """
             SELECT 'prompt' AS kind, p.id, p.session_id, p.project_id, p.ts,
                    p.text, p.is_slash, pr.display_name, s.title
             FROM prompt p
             LEFT JOIN project pr ON pr.id = p.project_id
             LEFT JOIN session s ON s.id = p.session_id
-            WHERE p.text LIKE ? ESCAPE '\\' ORDER BY p.ts DESC LIMIT ?
-        """)
+            WHERE p.text LIKE ? ESCAPE '\\'{w} ORDER BY p.ts DESC LIMIT ?
+        """, cond("p.ts", "p.is_slash"))
 
-    if scope in ("all", "reply"):
+    if scope in ("all", "reply") and slash != "only":
         # turn_fts 索引了 2554 筆 assistant 摘要，之前完全沒被查詢過
         hits += fetch("""
             SELECT 'reply' AS kind, t.id, t.session_id, t.project_id, t.ts,
                    t.assistant_summary AS text, 0 AS is_slash,
-                   pr.display_name, s.title
+                   pr.display_name, s.title,
+                   snippet(turn_fts, 0, char(2), char(3), '…', 24) AS snip
             FROM turn_fts f
             JOIN turn t ON t.id = f.rowid
             LEFT JOIN project pr ON pr.id = t.project_id
             LEFT JOIN session s ON s.id = t.session_id
-            WHERE turn_fts MATCH ? ORDER BY rank LIMIT ?
+            WHERE turn_fts MATCH ?{w} ORDER BY rank LIMIT ?
         """, """
             SELECT 'reply' AS kind, t.id, t.session_id, t.project_id, t.ts,
                    t.assistant_summary AS text, 0 AS is_slash,
@@ -288,21 +312,22 @@ def search(q: str = Query(..., min_length=1), limit: int = 80,
             FROM turn t
             LEFT JOIN project pr ON pr.id = t.project_id
             LEFT JOIN session s ON s.id = t.session_id
-            WHERE t.assistant_summary LIKE ? ESCAPE '\\'
+            WHERE t.assistant_summary LIKE ? ESCAPE '\\'{w}
             ORDER BY t.ts DESC LIMIT ?
-        """)
+        """, cond("t.ts"))
 
-    if scope in ("all", "agent"):
+    if scope in ("all", "agent") and slash != "only":
         # 子代理的回報常常是整份研究結果，主線只留了摘要 —— 值得能搜到
         hits += fetch("""
             SELECT 'agent' AS kind, a.id, a.session_id, a.project_id,
                    COALESCE(a.ended_at, a.started_at) AS ts,
                    COALESCE(a.result, a.description) AS text, 0 AS is_slash,
-                   pr.display_name, a.description AS title
+                   pr.display_name, a.description AS title,
+                   snippet(subagent_fts, 1, char(2), char(3), '…', 24) AS snip
             FROM subagent_fts f
             JOIN subagent a ON a.id = f.rowid
             LEFT JOIN project pr ON pr.id = a.project_id
-            WHERE subagent_fts MATCH ? ORDER BY rank LIMIT ?
+            WHERE subagent_fts MATCH ?{w} ORDER BY rank LIMIT ?
         """, """
             SELECT 'agent' AS kind, a.id, a.session_id, a.project_id,
                    COALESCE(a.ended_at, a.started_at) AS ts,
@@ -310,14 +335,18 @@ def search(q: str = Query(..., min_length=1), limit: int = 80,
                    pr.display_name, a.description AS title
             FROM subagent a
             LEFT JOIN project pr ON pr.id = a.project_id
-            WHERE a.result LIKE ? ESCAPE '\\' OR a.description LIKE ? ESCAPE '\\'
+            WHERE (a.result LIKE ? ESCAPE '\\' OR a.description LIKE ? ESCAPE '\\'){w}
             ORDER BY a.ended_at DESC LIMIT ?
-        """, like_twice=True)
+        """, cond("COALESCE(a.ended_at, a.started_at)"), like_twice=True)
 
     hits.sort(key=lambda h: h["ts"] or "", reverse=True)
+    for h in hits:
+        # FTS 有 snippet()，LIKE 路徑自己切視窗；兩邊都是「先跳脫再包 mark」
+        h["snippet"] = mark_fts(h.pop("snip", None)) or mark_like(h["text"], term)
     con.close()
     return {"mode": "+".join(sorted(modes)) or "none", "query": term,
-            "scope": scope, "count": len(hits),
+            "scope": scope, "since": since, "until": until, "slash": slash,
+            "count": len(hits),
             "prompts": sum(1 for h in hits if h["kind"] == "prompt"),
             "replies": sum(1 for h in hits if h["kind"] == "reply"),
             "agents": sum(1 for h in hits if h["kind"] == "agent"),
@@ -491,6 +520,46 @@ def reindex():
 
 
 # @F8-api
+# F8 沒有新端點，只有 search() 用得到的小工具。
+import html
+import re
+
+DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+SNIP_OPEN, SNIP_CLOSE = "\x02", "\x03"
+
+
+def day_arg(value):
+    """YYYY-MM-DD 才算數；空字串與亂寫的一律當沒給，不要丟進 SQL 的 date()。"""
+    value = (value or "").strip()
+    return value if DAY_RE.match(value) else ""
+
+
+def esc(text):
+    """跟前端 esc() 同一套：只跳脫 & < >。"""
+    return html.escape(text, quote=False)
+
+
+def mark_fts(snip):
+    """snippet() 的 \\x02 / \\x03 標記換成 <mark>。
+
+    順序不能反：先跳脫整段，再換標記。反過來的話 <mark> 自己會被 esc 吃掉。
+    """
+    if not snip or SNIP_OPEN not in snip:
+        return None      # 命中在別的欄位（子代理的 description）-> 讓呼叫端退回去
+    return esc(snip).replace(SNIP_OPEN, "<mark>").replace(SNIP_CLOSE, "</mark>")
+
+
+def mark_like(text, term, window=60):
+    """LIKE 路徑沒有 snippet()，自己切一段前後 window 字的視窗再包 mark。"""
+    if not text or not term:
+        return None
+    at = text.lower().find(term.lower())
+    if at < 0:                       # 例如子代理只有 description 命中
+        return None
+    start, end = max(0, at - window), min(len(text), at + len(term) + window)
+    chunk = ("…" if start else "") + text[start:end] + ("…" if end < len(text) else "")
+    return re.sub(re.escape(esc(term)), lambda m: f"<mark>{m.group(0)}</mark>",
+                  esc(chunk), flags=re.I)
 
 
 # @F9-api

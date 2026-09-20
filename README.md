@@ -394,7 +394,7 @@ jsonl 是 append-only，所以 `scan_state` 記錄每個檔案的 `(mtime, size,
 | `GET /api/browse?path=` | 列出某目錄的子目錄（`{name, path}`，路徑由後端拼）。**只回目錄名稱，不讀任何檔案內容**；`path` 留空時 Windows 回磁碟機 + 執行中的 WSL 發行版 |
 | `GET /api/project/{id}` | 專案詳情 + session 列表 |
 | `GET /api/session/{id}` | prompt / turn / 改檔 / 指令 / commit / 進度訊號 |
-| `GET /api/search?q=&limit=` | 全文搜尋（FTS5，短查詢自動退回 LIKE） |
+| `GET /api/search?q=&limit=&scope=&since=&until=&slash=` | 全文搜尋（FTS5，短查詢自動退回 LIKE）。`scope`=all/prompt/reply/agent；`since`/`until` 是 `YYYY-MM-DD`，`until` 含當天；`slash`=all/only/exclude（only 時不查回覆與子代理）。每筆命中多一個 `snippet`：已跳脫的片段，命中處包 `<mark>` |
 | `GET /api/recent?limit=` | 跨專案最近動態 |
 | `GET /api/heatmap` | 每日 prompt 數 |
 | `GET /api/day/{YYYY-MM-DD}` | 某一天的所有 prompt |
