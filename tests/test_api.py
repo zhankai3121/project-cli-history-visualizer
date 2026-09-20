@@ -103,3 +103,86 @@ def test_browse_列得出子目錄(client, indexed):
 
 def test_browse_不存在的路徑回_404(client):
     assert client.get("/api/browse", params={"path": "Z:\\無"}).status_code == 404
+
+
+# ── F8 搜尋強化 ───────────────────────────────────────────────────────────
+# 合成資料的時間軸：prompt 都在 2026-08-29，assistant 摘要在 2026-09-01。
+
+
+def test_搜尋_日期範圍(client):
+    def hit(**extra):
+        return client.get("/api/search", params={"q": "設定檔", **extra}).json()
+
+    assert hit(since="2026-09-02")["count"] == 0
+    got = hit(since="2026-09-01")
+    assert got["count"] >= 1 and got["since"] == "2026-09-01"
+    assert hit(until="2026-09-01")["count"] >= 1, "until 應該含當天"
+    assert hit(until="2026-08-31")["count"] == 0
+    # prompt 那條路徑也要吃到範圍（prompt 全在 08-29）
+    assert client.get("/api/search",
+                      params={"q": "第一個問題", "since": "2026-09-01"}).json()["count"] == 0
+
+
+def test_slash_only_只回_slash_prompt(client):
+    d = client.get("/api/search", params={"q": "effort", "slash": "only"}).json()
+    assert d["count"] >= 1 and d["slash"] == "only"
+    assert all(h["kind"] == "prompt" and h["is_slash"] == 1 for h in d["hits"])
+    assert d["replies"] == 0 and d["agents"] == 0
+    assert client.get("/api/search",
+                      params={"q": "第一個問題", "slash": "only"}).json()["count"] == 0
+
+
+def test_slash_exclude(client):
+    assert client.get("/api/search",
+                      params={"q": "effort", "slash": "exclude"}).json()["count"] == 0
+    d = client.get("/api/search", params={"q": "第一個問題", "slash": "exclude"}).json()
+    assert d["count"] >= 1
+    assert all(h["is_slash"] == 0 for h in d["hits"])
+
+
+def test_FTS_snippet_有_mark(client):
+    d = client.get("/api/search", params={"q": "第一個問題"}).json()
+    assert "fts" in d["mode"] and d["hits"]
+    assert all("<mark>" in h["snippet"] for h in d["hits"])
+
+
+def test_LIKE_fallback_也有_snippet(client):
+    """<3 字走 LIKE，沒有 snippet() 可用，視窗與 mark 都是 Python 做的。"""
+    d = client.get("/api/search", params={"q": "部署"}).json()
+    assert "like" in d["mode"] and d["hits"]
+    assert "<mark>部署</mark>" in d["hits"][0]["snippet"]
+
+
+def test_snippet_已跳脫_HTML(fake_home):
+    """snippet 會直接進 innerHTML —— prompt 裡的標籤必須先變成實體。"""
+    from fastapi.testclient import TestClient
+
+    import indexer
+    import server
+    from conftest import jsonl
+
+    jsonl(fake_home["claude"] / "history.jsonl", [
+        {"display": "標籤測試 <b>x</b> 結束", "timestamp": 1788000180000,
+         "project": str(fake_home["work"] / "alpha"), "sessionId": "sess-1"},
+    ])
+    indexer.run(full=True)
+    d = TestClient(server.app).get("/api/search", params={"q": "標籤測試"}).json()
+    snips = [h["snippet"] for h in d["hits"]]
+    assert snips, "合成的 prompt 沒被搜到"
+    assert any("&lt;b&gt;" in s for s in snips)
+    assert all("<b>" not in s for s in snips)
+    assert any("<mark>" in s for s in snips), "跳脫之後 mark 還是要保留原樣"
+
+
+def test_日期形狀對但不存在_當沒給(client):
+    """2026-13-45 過得了 regex，SQLite date() 回 NULL 會靜默 0 筆。"""
+    d = client.get("/api/search", params={"q": "設定檔", "since": "2026-13-45"}).json()
+    assert d["since"] == "" and d["hits"]
+
+
+def test_LIKE_mark_不會包進實體裡():
+    """q=lt 時 '&lt;' 這種實體內部不能被 mark，否則畫面出現字面的 &lt;。"""
+    import server
+
+    out = server.mark_like("count < 5 and lt", "lt")
+    assert out == "count &lt; 5 and <mark>lt</mark>"

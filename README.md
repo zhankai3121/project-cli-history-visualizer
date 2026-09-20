@@ -450,7 +450,7 @@ jsonl 是 append-only，所以 `scan_state` 記錄每個檔案的 `(mtime, size,
 | `GET /api/project/{id}` | 專案詳情 + session 列表 |
 | `GET /api/session/{id}` | prompt / turn / 改檔 / 指令 / commit / 進度訊號 |
 | `GET /api/session/{id}/export.md` | 整份 session 匯出成 Markdown（附件下載，交接用） |
-| `GET /api/search?q=&limit=` | 全文搜尋（FTS5，短查詢自動退回 LIKE） |
+| `GET /api/search?q=&limit=&scope=&since=&until=&slash=` | 全文搜尋（FTS5，短查詢自動退回 LIKE）。`scope`=all/prompt/reply/agent；`since`/`until` 是 `YYYY-MM-DD`，`until` 含當天；`slash`=all/only/exclude（only 時不查回覆與子代理）。每筆命中多一個 `snippet`：已跳脫的片段，命中處包 `<mark>` |
 | `GET /api/recent?limit=` | 跨專案最近動態 |
 | `GET /api/heatmap?metric=prompts\|tokens` | 每日 prompt 數；`tokens` 改回每日 token（熱度只算 input+cache_create+output，另附 `out` / `cache_read`） |
 | `GET /api/project/{id}/tokens` | 該專案的 token 用量：總量、模型分佈、每日曲線、子代理佔比 |
