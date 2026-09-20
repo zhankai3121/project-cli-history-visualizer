@@ -228,6 +228,7 @@ Server 每次提供專案清單時會順手 stat 一次資料夾，所以資料�
 | 續接某次對話 | session 詳情 → 複製 `claude --resume <id>` |
 | 匯出交接文件 | session 詳情 → `匯出 Markdown`（下載 `session-<id>.md`） |
 | 開專案 | 專案頁 → 在 VS Code 開啟 |
+| 釘選／標籤／筆記 | 專案頁 → `📌 / 🏷 / 📝`（釘選的排在總覽最前面，總覽的標籤下拉可篩選） |
 | 看這週做了什麼 | 標頭 `📅 本週`（◀ ▶ 切換週次，點專案卡進專案頁） |
 | 設定專案資料夾 | 標頭 `📁 資料夾` |
 | 字級調整 | 標頭 `A−` / `A+`（倍率 0.7–2.0，存 localStorage） |
@@ -443,6 +444,8 @@ project(real_path UNIQUE, display_name, first_seen, last_seen, session_count,
         prompt_count, exists_on_disk, has_history, is_scanned, is_git, is_container,
         git_branch, git_last_ts, git_last_msg, git_dirty, git_commits, vanished_at)
 app_config(key PK, value)                      -- 目前只存 project_roots
+project_meta(real_path PK, pinned, tags, note, updated_at)
+                                               -- 手動標記。key 是路徑不是 id，--full 重排 id 也對得上
 session(id PK, project_id, started_at, ended_at, prompt_count, title,
         transcript_state)                      -- live | gone
 prompt(session_id, project_id, ts, seq, text, is_slash, source, pasted)
@@ -482,6 +485,9 @@ jsonl 是 append-only，所以 `scan_state` 記錄每個檔案的 `(mtime, size,
 | `GET /api/project/{id}/files?limit=` | 該專案被改最多次的檔案（Windows 上大小寫視為同一檔；`rel` 已去掉專案前綴，比對時 `\`/`/` 都當分隔） |
 | `GET /api/project/{id}/file?path=` | 某個檔案被哪些 session 改過（`path` 用 `/files` 回的原始路徑，含反斜線）；查無資料回空 list |
 | `GET /api/project/{id}/timeline?limit=` | 目標演進：away_summary／compact_summary／手寫 memory 檔依時間遞增（不含 `last_prompt`、`cost_state`） |
+| `GET /api/project/{id}/meta` | 該專案的手動標記：`{pinned, tags, note, updated_at}`（沒標記過回預設值） |
+| `PUT /api/project/{id}/meta` | 更新手動標記。body 是 `{pinned?, tags?, note?}` 的任意子集，沒給的欄位沿用舊值，回合併後的完整 meta。tags 會 strip／去空／去重，上限 20 個 × 30 字；note 上限 4000 字；型別錯回 400 |
+| `GET /api/tags` | 用過的標籤與次數 `{tags:[{tag, n}]}`，次數多的排前面 |
 | `GET /api/day/{YYYY-MM-DD}` | 某一天的所有 prompt |
 | `GET /api/week?start=YYYY-MM-DD` | 一週回顧：專案、commit、紅旗、token，附上週對照（`start` 預設本週一，時間以 UTC 分界） |
 | `POST /api/reindex` | 增量重新索引 |

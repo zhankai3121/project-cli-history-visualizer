@@ -39,6 +39,16 @@ CREATE TABLE IF NOT EXISTS app_config (
     value TEXT NOT NULL
 );
 
+-- 使用者手動標記。key 是 real_path 不是 project_id —— --full 重建後 id 會重排，
+-- 只有路徑對得回同一個專案。沒有 FK：專案列被刪掉 meta 還留著，路徑回來就接上。
+CREATE TABLE IF NOT EXISTS project_meta (
+    real_path  TEXT PRIMARY KEY,
+    pinned     INTEGER NOT NULL DEFAULT 0,
+    tags       TEXT NOT NULL DEFAULT '[]',   -- JSON 陣列
+    note       TEXT,
+    updated_at TEXT
+);
+
 CREATE TABLE IF NOT EXISTS session (
     id               TEXT PRIMARY KEY,
     project_id       INTEGER REFERENCES project(id),

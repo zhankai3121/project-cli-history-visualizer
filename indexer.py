@@ -1184,12 +1184,20 @@ def run(full=False, force_git=False):
     # --full 砍掉整個 DB 重建，但使用者設定（專案根目錄）不該跟著陪葬。
     # 先抄出來，建好新 DB 再寫回去。
     saved_config = {}
+    saved_meta = []
     if full and DB_PATH.exists():
         try:
             old = sqlite3.connect(DB_PATH)
             old.row_factory = sqlite3.Row
             saved_config = {r["key"]: r["value"]
                             for r in old.execute("SELECT key, value FROM app_config")}
+            # 手動標記（釘選／標籤／筆記）同理。表可能還不存在（升級前的舊 DB），
+            # 讀不到就當沒有，不要連 app_config 也一起放棄。
+            try:
+                saved_meta = [tuple(r) for r in old.execute(
+                    "SELECT real_path, pinned, tags, note, updated_at FROM project_meta")]
+            except sqlite3.Error:
+                pass
             old.close()
         except sqlite3.Error:
             pass
@@ -1207,6 +1215,10 @@ def run(full=False, force_git=False):
     for key, value in saved_config.items():
         con.execute("INSERT OR REPLACE INTO app_config(key, value) VALUES (?, ?)",
                     (key, value))
+    for row in saved_meta:
+        con.execute("INSERT OR REPLACE INTO project_meta"
+                    "(real_path, pinned, tags, note, updated_at) VALUES (?, ?, ?, ?, ?)",
+                    row)
     resolver = Resolver(con)
 
     prompts = index_history(con, resolver)

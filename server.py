@@ -105,6 +105,7 @@ def overview(include_gone: bool = False, include_containers: bool = False,
                p.vanished_at, p.git_branch, p.git_last_ts, p.git_last_msg,
                p.git_dirty, p.git_commits, p.is_container, p.is_scanned,
                p.is_system, p.has_history,
+               COALESCE(m.pinned, 0) AS pinned, COALESCE(m.tags, '[]') AS tags, m.note,
                (SELECT COUNT(*) FROM commit_ref c WHERE c.project_id = p.id) AS commits,
                (SELECT COUNT(DISTINCT path) FROM file_touch f WHERE f.project_id = p.id) AS files,
                (SELECT COUNT(DISTINCT path) FROM file_touch f
@@ -119,12 +120,13 @@ def overview(include_gone: bool = False, include_containers: bool = False,
                  WHERE s.project_id = p.id AND s.transcript_state = 'live') AS live_sessions,
                (SELECT GROUP_CONCAT(DISTINCT s.tool) FROM session s
                  WHERE s.project_id = p.id) AS tools
-        FROM project p {where}
+        FROM project p LEFT JOIN project_meta m ON m.real_path = p.real_path {where}
         ORDER BY p.last_seen DESC
     """))
 
     for proj in projects:
         pid = proj["id"]
+        proj["tags"] = json.loads(proj["tags"])
 
         signal = con.execute("""
             SELECT kind, goal, state, next_step, origin, ts FROM progress_signal
@@ -827,6 +829,113 @@ def session_export(session_id: str):
 
 
 # @F7-api
+import json
+
+# tags 存成 JSON 字串（SQLite 沒有陣列型別），進出口都在這一層轉換
+META_DEFAULT = {"pinned": 0, "tags": [], "note": None, "updated_at": None}
+MAX_TAGS, MAX_TAG_LEN, MAX_NOTE = 20, 30, 4000
+
+
+def read_meta(con, real_path):
+    row = con.execute("SELECT pinned, tags, note, updated_at FROM project_meta "
+                      "WHERE real_path = ?", (real_path,)).fetchone()
+    if row is None:
+        return dict(META_DEFAULT)
+    return {"pinned": row["pinned"], "tags": json.loads(row["tags"]),
+            "note": row["note"], "updated_at": row["updated_at"]}
+
+
+def clean_tags(value):
+    """strip、丟空字串、去重（保留輸入順序）。超過上限是使用者的錯，回 400。"""
+    if not isinstance(value, list):
+        raise HTTPException(400, "tags 必須是陣列")
+    out = []
+    for tag in value:
+        if not isinstance(tag, str):
+            raise HTTPException(400, "tags 的每一項都必須是字串")
+        tag = tag.strip()
+        if not tag or tag in out:
+            continue
+        if len(tag) > MAX_TAG_LEN:
+            raise HTTPException(400, f"標籤超過 {MAX_TAG_LEN} 字")
+        out.append(tag)
+    if len(out) > MAX_TAGS:
+        raise HTTPException(400, f"標籤最多 {MAX_TAGS} 個")
+    return out
+
+
+def clean_patch(payload):
+    """驗證 PUT 的 body 並轉成可以直接 update 進 meta 的子集。
+
+    先驗完再碰 DB —— 型別錯的 body 不該留下寫了一半的列。
+    """
+    patch = {}
+    if "pinned" in payload:
+        if not isinstance(payload["pinned"], bool):
+            raise HTTPException(400, "pinned 必須是 true / false")
+        patch["pinned"] = int(payload["pinned"])
+    if "tags" in payload:
+        patch["tags"] = clean_tags(payload["tags"])
+    if "note" in payload:
+        note = payload["note"]
+        if note is not None:
+            if not isinstance(note, str):
+                raise HTTPException(400, "note 必須是字串")
+            if len(note) > MAX_NOTE:
+                raise HTTPException(400, f"note 超過 {MAX_NOTE} 字")
+        patch["note"] = note
+    return patch
+
+
+@app.get("/api/project/{project_id}/meta")
+def get_project_meta(project_id: int):
+    con = db()
+    row = con.execute("SELECT real_path FROM project WHERE id = ?",
+                      (project_id,)).fetchone()
+    meta = read_meta(con, row["real_path"]) if row else None
+    con.close()
+    if meta is None:
+        raise HTTPException(404, "no such project")
+    return meta
+
+
+@app.put("/api/project/{project_id}/meta")
+def put_project_meta(project_id: int, payload: dict):
+    """body 是任意子集，沒給的欄位沿用舊值，回傳合併後的完整 meta。"""
+    patch = clean_patch(payload)
+    con = db()
+    row = con.execute("SELECT real_path FROM project WHERE id = ?",
+                      (project_id,)).fetchone()
+    if row is None:
+        con.close()
+        raise HTTPException(404, "no such project")
+    # key 用 project 表裡的原字串，不自行正規化大小寫，否則 Windows 上同一個
+    # 專案會寫出兩列（C:\… 與 c:\…）
+    real_path = row["real_path"]
+    meta = read_meta(con, real_path)
+    meta.update(patch)
+    meta["updated_at"] = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+    con.execute("INSERT OR REPLACE INTO project_meta"
+                "(real_path, pinned, tags, note, updated_at) VALUES (?, ?, ?, ?, ?)",
+                (real_path, meta["pinned"],
+                 json.dumps(meta["tags"], ensure_ascii=False),
+                 meta["note"], meta["updated_at"]))
+    con.commit()
+    con.close()
+    return meta
+
+
+@app.get("/api/tags")
+def all_tags():
+    """用過的標籤與次數，多的排前面。標籤存在 JSON 裡，只能在 Python 端數。"""
+    con = db()
+    counts = {}
+    for row in con.execute("SELECT tags FROM project_meta"):
+        for tag in json.loads(row["tags"]):
+            counts[tag] = counts.get(tag, 0) + 1
+    con.close()
+    ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    return {"tags": [{"tag": tag, "n": n} for tag, n in ranked]}
 
 
 # @F8-api
