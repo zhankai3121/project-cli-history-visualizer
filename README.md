@@ -194,9 +194,25 @@ Server 每次提供專案清單時會順手 stat 一次資料夾，所以資料�
 | 設定專案資料夾 | 標頭 `📁 資料夾` |
 | 字級調整 | 標頭 `A−` / `A+`（倍率 0.7–2.0，存 localStorage） |
 | 外觀 | 標頭下拉選單：**預設 · 亮** / **預設 · 暗** / 10 種主題 |
+| 不開瀏覽器查 | `python cli.py search <關鍵字>`（見下方「終端機」） |
 
 排序：最近活動／停滯最久／紅旗優先／prompt 量
 篩選：有未完成的 Next／30 天內活躍／有紅旗／過程已蒸發／顯示已刪除的專案／顯示容器目錄／只看有 CLI 紀錄
+
+### 終端機
+
+`cli.py` 直接讀同一份 `index.db`，不啟 server、不開瀏覽器：
+
+```
+python cli.py search 熱度圖 [--scope all|prompt|reply|agent] [--limit 30] [--json]
+python cli.py projects [--json]
+python cli.py session <session-id> [--json]
+python cli.py recent [--limit 30]
+```
+
+每筆一行 `日期  專案 › session 標題  內文`；`--json` 印的是 API 原樣的結構，
+可以接 `jq`。exit code：有結果 `0`、查無結果 `1`、還沒建索引 `2`（會提示先跑
+`python indexer.py`）—— 所以能直接寫進 shell 腳本。
 
 ## 支援的 CLI
 
