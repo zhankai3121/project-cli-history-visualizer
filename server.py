@@ -761,6 +761,144 @@ def mark_like(text, term, window=60):
 
 
 # @F9-api
+import datetime as dt
+
+ZERO_TOKENS = {"calls": 0, "output": 0, "input_all": 0, "cache_read": 0}
+
+
+def week_bounds(start):
+    """(週一, 下週一)。start 空字串 -> 本地時間的本週一；格式錯 -> 400。"""
+    if not start:
+        today = dt.date.today()
+        begin = today - dt.timedelta(days=today.weekday())
+    else:
+        try:
+            begin = dt.date.fromisoformat(start)
+        except ValueError:
+            raise HTTPException(400, "start 要是 YYYY-MM-DD")
+    return begin.isoformat(), (begin + dt.timedelta(days=7)).isoformat()
+
+
+def week_tokens(con, start, end, per_project=False):
+    """這段期間燒掉的 token。api_call 是 F1 才有的表，舊 DB 沒有就當成沒用量。"""
+    sql = f"""
+        SELECT {"project_id, " if per_project else ""}COUNT(*) AS calls,
+               COALESCE(SUM(output_tokens), 0)                      AS output,
+               COALESCE(SUM(input_tokens + cache_create_tokens), 0) AS input_all,
+               COALESCE(SUM(cache_read_tokens), 0)                  AS cache_read
+        FROM api_call WHERE ts >= ? AND ts < ?
+        {"GROUP BY project_id" if per_project else ""}
+    """
+    try:
+        got = rows(con.execute(sql, (start, end)))
+    except sqlite3.OperationalError:
+        return [] if per_project else dict(ZERO_TOKENS)
+    return got if per_project else (got[0] if got else dict(ZERO_TOKENS))
+
+
+def week_totals(con, start, end):
+    """給 prev 對照用的三個數字。"""
+    prompts = con.execute(
+        "SELECT COUNT(*) FROM prompt WHERE is_slash = 0 AND ts >= ? AND ts < ?",
+        (start, end)).fetchone()[0]
+    commits = con.execute(
+        "SELECT COUNT(*) FROM commit_ref WHERE ts >= ? AND ts < ?",
+        (start, end)).fetchone()[0]
+    return {"prompts": prompts, "commits": commits,
+            "tokens_out": week_tokens(con, start, end)["output"]}
+
+
+@app.get("/api/week")
+def week(start: str = ""):
+    """這週跨專案發生了什麼。
+
+    所有 ts 都是 UTC 的 ISO 字串，比較就直接 `>= start AND < end`（與 heatmap
+    同一套）—— 本地時間的週一 00:00 不等於 UTC 的週一 00:00，前端要註明。
+    """
+    start, end = week_bounds(start)
+    prev_start = (dt.date.fromisoformat(start) - dt.timedelta(days=7)).isoformat()
+    con = db()
+    args = (start, end)
+
+    agg = {}
+
+    def bucket(pid):
+        return agg.setdefault(pid, {
+            "id": pid, "display_name": None, "prompts": 0, "sessions": 0,
+            "files": 0, "commits": 0, "tokens_out": 0, "tokens_all": 0,
+            "goal": None, "next_step": None})
+
+    for r in rows(con.execute("""
+        SELECT project_id, COUNT(*) AS n FROM prompt
+        WHERE is_slash = 0 AND ts >= ? AND ts < ? AND project_id IS NOT NULL
+        GROUP BY project_id""", args)):
+        bucket(r["project_id"])["prompts"] = r["n"]
+
+    # session 數要含「這週只有 commit / 改檔」的專案，不能只看 prompt
+    for r in rows(con.execute("""
+        SELECT project_id, COUNT(DISTINCT session_id) AS n FROM (
+            SELECT project_id, session_id FROM prompt      WHERE ts >= ? AND ts < ?
+            UNION
+            SELECT project_id, session_id FROM commit_ref  WHERE ts >= ? AND ts < ?
+            UNION
+            SELECT project_id, session_id FROM file_touch  WHERE ts >= ? AND ts < ?
+        ) WHERE project_id IS NOT NULL GROUP BY project_id""", args * 3)):
+        bucket(r["project_id"])["sessions"] = r["n"]
+
+    for r in rows(con.execute("""
+        SELECT project_id, COUNT(DISTINCT path) AS n FROM file_touch
+        WHERE ts >= ? AND ts < ? AND project_id IS NOT NULL
+        GROUP BY project_id""", args)):
+        bucket(r["project_id"])["files"] = r["n"]
+
+    for r in rows(con.execute("""
+        SELECT project_id, COUNT(*) AS n FROM commit_ref
+        WHERE ts >= ? AND ts < ? AND project_id IS NOT NULL
+        GROUP BY project_id""", args)):
+        bucket(r["project_id"])["commits"] = r["n"]
+
+    for r in week_tokens(con, start, end, per_project=True):
+        if r["project_id"] is None:
+            continue
+        b = bucket(r["project_id"])
+        b["tokens_out"] = r["output"]
+        b["tokens_all"] = r["input_all"] + r["output"]
+
+    # 這週最新的進度訊號（ts 由舊到新，後面的直接覆蓋前面的）
+    for r in rows(con.execute("""
+        SELECT project_id, goal, next_step FROM progress_signal
+        WHERE ts >= ? AND ts < ? AND project_id IS NOT NULL
+          AND (goal IS NOT NULL OR next_step IS NOT NULL)
+        ORDER BY ts""", args)):
+        b = bucket(r["project_id"])
+        b["goal"], b["next_step"] = r["goal"], r["next_step"]
+
+    for r in con.execute("SELECT id, display_name FROM project"):
+        if r["id"] in agg:
+            agg[r["id"]]["display_name"] = r["display_name"]
+
+    projects = sorted(agg.values(),
+                      key=lambda p: (-p["prompts"], -p["commits"],
+                                     p["display_name"] or ""))
+
+    commits = rows(con.execute("""
+        SELECT c.project_id, pr.display_name, c.ts, c.message
+        FROM commit_ref c LEFT JOIN project pr ON pr.id = c.project_id
+        WHERE c.ts >= ? AND c.ts < ? ORDER BY c.ts""", args))
+
+    # 同一個檔案一週內被改 3 次以上 —— 大概是在原地打轉
+    flags = rows(con.execute("""
+        SELECT f.project_id, pr.display_name, f.path, COUNT(*) AS n
+        FROM file_touch f LEFT JOIN project pr ON pr.id = f.project_id
+        WHERE f.ts >= ? AND f.ts < ?
+        GROUP BY f.project_id, f.path HAVING n >= 3 ORDER BY n DESC""", args))
+
+    payload = {"start": start, "end": end, "projects": projects,
+               "commits": commits, "flags": flags,
+               "tokens": week_tokens(con, start, end),
+               "prev": week_totals(con, prev_start, start)}
+    con.close()
+    return payload
 
 
 if __name__ == "__main__":
