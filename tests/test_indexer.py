@@ -200,3 +200,47 @@ def test_watch_遇到鎖不會退出(indexed, monkeypatch, capsys):
     monkeypatch.setattr(indexer, "run", flaky)
     assert indexer.watch(interval=0, max_runs=2) == 2
     assert "DB 忙" in capsys.readouterr().out
+
+
+# ── progress_signal：session_id IS NULL 的去重 ────────────────────────────
+
+def memory_rows(db):
+    return rows(db, "SELECT id, origin, ts, body FROM progress_signal "
+                    "WHERE kind = 'memory_file' ORDER BY id")
+
+
+def test_memory_file_不會因為_session_id_NULL_重複(indexed):
+    """UNIQUE(session_id, …) 對 NULL 無效 —— 每跑一次索引就多一份，時間軸會洗版。"""
+    db = indexed["db"]
+    before = memory_rows(db)
+    assert len(before) == 1, "合成樹裡只有一個 brain.md，測試不能空轉"
+
+    for _ in range(3):
+        indexer.run(full=False)
+
+    after = memory_rows(db)
+    assert len(after) == 1, f"增量三次後變成 {len(after)} 份"
+    assert [r["id"] for r in after] == [r["id"] for r in before], "原本那列被換掉了"
+
+
+def test_migrate_會清掉既有的_memory_重複列(indexed):
+    db = indexed["db"]
+    src = memory_rows(db)[0]
+
+    con = sqlite3.connect(db)
+    for _ in range(4):                      # 模擬修好之前累積的 5 份
+        con.execute(
+            "INSERT INTO progress_signal"
+            "(session_id, project_id, ts, kind, goal, next_step, body, origin) "
+            "SELECT NULL, project_id, ts, kind, goal, next_step, body, origin "
+            "FROM progress_signal WHERE id = ?", (src["id"],))
+    con.commit()
+    con.close()
+    assert len(memory_rows(db)) == 5
+
+    indexer.connect().close()               # connect() 會跑 migrate()
+    left = memory_rows(db)
+    assert [r["id"] for r in left] == [src["id"]], "沒有只留下最早的那一列"
+
+    indexer.connect().close()               # 冪等：再跑一次不該再動任何東西
+    assert memory_rows(db) == left

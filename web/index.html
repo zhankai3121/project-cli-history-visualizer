@@ -273,6 +273,13 @@ kbd{font:.58rem/1 ui-monospace,monospace; border:1px solid var(--line); border-b
 
 
 /* @F3-css */
+.tl{margin:.8em 0 0}
+.tl summary{cursor:pointer; color:var(--dim); font-size:.72rem}
+.tl ol{list-style:none; padding:0; margin:.4em 0; border-left:2px solid var(--line)}
+.tl li{padding:.2em .6em; font-size:.78rem; overflow-wrap:anywhere}
+.tl li[data-s]{cursor:pointer}
+.tl li[data-s]:hover{background:var(--bg)}
+.tl time{color:var(--dim); font-size:.66rem}
 
 
 /* @F4-css */
@@ -846,7 +853,11 @@ async function openProject(id, focusSession) {
     <div class="split">
       <div class="list">${sessions.map(sessionRow).join("") || '<p class="empty">無 session</p>'}</div>
       <div class="pane" id="sesspane"><p class="empty">選一個 session</p></div>
-    </div>`;
+    </div>
+    <details id="timeline" class="tl" open>
+      <summary>目標演進 <span id="tlcount"></span></summary>
+      <ol id="tlist"></ol>
+    </details>`;
   $("#detail .back").onclick = () => { show("overview"); };
   $("#detail .list").onclick = e => {
     const el = e.target.closest(".sess");
@@ -860,6 +871,7 @@ async function openProject(id, focusSession) {
   watchScroll($("#detail .list"));
   loadModels(id);
   loadFiles(id);
+  loadTimeline(id);
   if (sessions.length) openSession(focusSession || sessions[0].id);
 }
 
@@ -1131,6 +1143,33 @@ async function loadFileSessions(id, el) {
 
 
 /* @F3-js */
+/* ── 目標演進時間軸 ───────────────────────────────────────────── */
+// 專案頁原本只看得到「最新」那一則進度訊號，換過幾次方向完全看不出來。
+// 同一天的多筆只在第一筆印日期 —— 每行都重複同一個日期，反而看不出哪天轉彎。
+async function loadTimeline(id) {
+  // 兩個元素都在 await 之前抓：中途切到別的專案，舊資料才不會落到新面板
+  const list = $("#tlist"), count = $("#tlcount");
+  if (!list) return;
+  const { items } = await api(`/api/project/${id}/timeline`);
+  if (!list.isConnected) return;
+  count.textContent = items.length ? `(${items.length})` : "";
+  let seen = "";
+  list.innerHTML = items.map(it => {
+    const label = date(it.ts);          // 比的是印出來的字，不是 UTC 日期，
+    const day = label === seen ? "" : label;   // 否則跨時區那幾筆會分成兩天
+    seen = label;
+    const who = it.title ? `${it.origin || it.kind} · ${it.title}` : (it.origin || it.kind);
+    return `<li${it.session_id ? ` data-s="${esc(it.session_id)}"` : ""}>` +
+      `<time>${esc(day)}</time> <span class="src">${esc(who)}</span> ` +
+      (it.goal ? `<b>目標</b> ${esc(it.goal)} ` : "") +
+      (it.state ? `<b>狀態</b> ${esc(it.state)} ` : "") +
+      (it.next_step ? `<b>下一步</b> ${esc(it.next_step)}` : "") + `</li>`;
+  }).join("") || '<li class="empty">還沒有進度訊號</li>';
+  list.onclick = e => {
+    const li = e.target.closest("li[data-s]");
+    if (li) openSession(li.dataset.s);
+  };
+}
 
 
 /* @F4-js */

@@ -664,6 +664,29 @@ def project_file(project_id: int, path: str = Query(..., min_length=1)):
 
 # @F3-api
 
+@app.get("/api/project/{project_id}/timeline")
+def project_timeline(project_id: int, limit: int = Query(200, ge=1, le=1000)):
+    """這個專案的目標一路怎麼變的 —— 只有「會講目標的」訊號進得來。
+
+    `last_prompt` 只是最後一句話、`cost_state` 是花費統計，兩個都沒有目標可言，
+    放進來只會把真正換過方向的那幾天洗掉。
+    """
+    con = db()
+    if con.execute("SELECT 1 FROM project WHERE id = ?", (project_id,)).fetchone() is None:
+        con.close()
+        raise HTTPException(404, "no such project")
+    items = rows(con.execute("""
+        SELECT g.ts, g.kind, g.origin, g.session_id, s.title,
+               g.goal, g.state, g.next_step
+        FROM progress_signal g LEFT JOIN session s ON s.id = g.session_id
+        WHERE g.project_id = ?
+          AND g.kind IN ('away_summary', 'compact_summary', 'memory_file')
+          AND (g.goal IS NOT NULL OR g.state IS NOT NULL OR g.next_step IS NOT NULL)
+        ORDER BY g.ts LIMIT ?
+    """, (project_id, limit)))
+    con.close()
+    return {"items": items}
+
 
 # @F4-api
 

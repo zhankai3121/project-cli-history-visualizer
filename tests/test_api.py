@@ -312,3 +312,38 @@ def test_檔案查無資料回空(files_client):
     assert r.json()["sessions"] == []
     assert files_client.get("/api/project/999999/file",
                             params={"path": "x"}).status_code == 404
+
+
+def test_timeline_依時間遞增且排除_last_prompt(client):
+    """時間軸只收「會講目標」的訊號。last_prompt / cost_state 進來只會洗版。"""
+    import sqlite3
+
+    pid = alpha_id(client)
+    con = sqlite3.connect(indexer.DB_PATH)
+    con.execute("INSERT INTO progress_signal"
+                "(session_id, project_id, ts, kind, goal, next_step, body, origin) "
+                "VALUES ('sess-1', ?, '2026-09-01T11:00:00+00:00', 'last_prompt',"
+                " NULL, NULL, '最後一句話', 'last-prompt')", (pid,))
+    con.execute("INSERT INTO progress_signal"
+                "(session_id, project_id, ts, kind, goal, next_step, body, origin) "
+                "VALUES ('sess-1', ?, '2026-09-01T12:00:00+00:00', 'cost_state',"
+                " NULL, NULL, '{}', 'cost-state')", (pid,))
+    con.commit()
+    con.close()
+
+    items = client.get(f"/api/project/{pid}/timeline").json()["items"]
+    assert len(items) == 2, "brain.md 與 away_summary 各一筆"
+    assert {i["kind"] for i in items} == {"memory_file", "away_summary"}
+
+    ts = [i["ts"] for i in items]
+    assert ts == sorted(ts), "沒有依 ts 遞增"
+
+    first, last = items
+    assert first["origin"] == "brain.md" and first["session_id"] is None
+    assert last["session_id"] == "sess-1" and last["title"] == "設定檔調整", \
+        "沒有 LEFT JOIN session 取標題"
+    assert last["goal"] == "ship the config change."
+    assert set(first) == {"ts", "kind", "origin", "session_id", "title",
+                          "goal", "state", "next_step"}
+
+    assert client.get("/api/project/999999/timeline").status_code == 404

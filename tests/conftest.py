@@ -4,7 +4,9 @@
 而且不能因為某人的歷史資料剛好長得不一樣就紅燈。
 """
 
+import datetime as dt
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -73,6 +75,15 @@ def fake_home(tmp_path, monkeypatch):
          "sessionId": "sess-1", "timestamp": "2026-09-01T10:30:00.000Z",
          "content": "Goal: ship the config change. Next: run the tests."},
     ])
+
+    # 使用者手寫的進度檔（對照欄）。它的訊號時間就是檔案 mtime，所以固定住 ——
+    # 不然每次跑測試都會落在「本週」，每週回顧那幾條會跟著飄。
+    brain = projects / "slug-alpha" / "memory" / "brain.md"
+    brain.parent.mkdir(parents=True, exist_ok=True)
+    brain.write_text("## Focus\n把設定搬進 config.py\n\n"
+                     "## Next (when resuming)\n補上測試\n", encoding="utf-8")
+    stamp = dt.datetime(2026, 9, 1, 9, 0, tzinfo=dt.timezone.utc).timestamp()
+    os.utime(brain, (stamp, stamp))
 
     monkeypatch.setattr(indexer, "CLAUDE_DIR", claude)
     monkeypatch.setattr(indexer, "HISTORY", claude / "history.jsonl")

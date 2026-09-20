@@ -124,6 +124,16 @@ def migrate(con):
             if name not in have:
                 con.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
 
+    # _signal() 修好之前累積的重複列（見那邊的註解）。每組只留最早的一筆；
+    # 已經清乾淨的 DB 再跑會刪 0 列，所以放在這裡每次開連線都跑也無妨。
+    con.execute("""
+        DELETE FROM progress_signal
+        WHERE kind = 'memory_file' AND id NOT IN (
+            SELECT MIN(id) FROM progress_signal WHERE kind = 'memory_file'
+            GROUP BY project_id, origin, ts, body)
+    """)
+    con.commit()
+
 
 # ── 專案 / session 解析 ───────────────────────────────────────────────────
 
@@ -420,6 +430,16 @@ def backfill_usage(con):
 
 
 def _signal(con, session_id, project_id, ts, kind, goal, nxt, body, origin, state=None):
+    # UNIQUE(session_id, kind, ts, body) 擋不住 session_id IS NULL 的列 —— SQLite 裡
+    # NULL 互不相等，所以 INSERT OR IGNORE 每跑一次就多插一份 memory 檔的訊號
+    # （本機每份 brain.md 已經 5 份）。沒有 session 的來源自己先查一次。
+    if session_id is None:
+        dup = con.execute(
+            "SELECT 1 FROM progress_signal WHERE session_id IS NULL "
+            "AND project_id IS ? AND kind = ? AND origin IS ? AND ts = ? AND body IS ?",
+            (project_id, kind, origin, ts, body)).fetchone()
+        if dup:
+            return
     con.execute(
         "INSERT OR IGNORE INTO progress_signal"
         "(session_id, project_id, ts, kind, goal, state, next_step, body, origin) "
