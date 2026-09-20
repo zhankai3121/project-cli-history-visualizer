@@ -109,6 +109,11 @@ def overview(include_gone: bool = False, include_containers: bool = False,
                (SELECT COUNT(DISTINCT path) FROM file_touch f
                  WHERE f.project_id = p.id AND f.via_agent IS NOT NULL) AS agent_files,
                (SELECT COUNT(*) FROM subagent a WHERE a.project_id = p.id) AS agents,
+               (SELECT COALESCE(SUM(k.output_tokens), 0) FROM api_call k
+                 WHERE k.project_id = p.id) AS tokens_out,
+               (SELECT COALESCE(SUM(k.input_tokens + k.cache_create_tokens
+                                    + k.output_tokens), 0) FROM api_call k
+                 WHERE k.project_id = p.id) AS tokens_all,
                (SELECT COUNT(*) FROM session s
                  WHERE s.project_id = p.id AND s.transcript_state = 'live') AS live_sessions,
                (SELECT GROUP_CONCAT(DISTINCT s.tool) FROM session s
@@ -217,6 +222,7 @@ def session_detail(session_id: str):
             "turn_count, tool_count, file_count, input_tokens, output_tokens, "
             "started_at, substr(result,1,4000) AS result "
             "FROM subagent WHERE session_id = ? ORDER BY started_at", (session_id,))),
+        "usage": session_usage(con, session_id),
     }
     con.close()
     return payload
@@ -442,12 +448,34 @@ def recent(limit: int = 60):
 
 
 @app.get("/api/heatmap")
-def heatmap():
+def heatmap(metric: str = "prompts"):
+    """metric=prompts 每天幾則 prompt；metric=tokens 每天燒掉多少 token。
+
+    熱度只算 input + cache_create + output —— cache_read 佔了 97%，拿它當色階
+    會把每天壓成同一個顏色，所以只放進 title。有 prompt 卻沒有 api_call 的日子
+    仍然要出現（舊 DB 的日子），所以用 UNION ALL 補 0。
+    """
     con = db()
-    data = rows(con.execute(
-        "SELECT substr(ts,1,10) AS day, COUNT(*) n FROM prompt GROUP BY day ORDER BY day"))
+    if metric == "tokens":
+        data = rows(con.execute("""
+            SELECT day, SUM(n) AS n, SUM(out) AS out, SUM(cache_read) AS cache_read
+            FROM (
+                SELECT substr(ts,1,10) AS day,
+                       COALESCE(input_tokens, 0) + COALESCE(cache_create_tokens, 0)
+                         + COALESCE(output_tokens, 0) AS n,
+                       COALESCE(output_tokens, 0)     AS out,
+                       COALESCE(cache_read_tokens, 0) AS cache_read
+                FROM api_call WHERE ts IS NOT NULL
+                UNION ALL
+                SELECT substr(ts,1,10), 0, 0, 0 FROM prompt
+            ) GROUP BY day ORDER BY day
+        """))
+    else:
+        metric = "prompts"
+        data = rows(con.execute(
+            "SELECT substr(ts,1,10) AS day, COUNT(*) n FROM prompt GROUP BY day ORDER BY day"))
     con.close()
-    return {"days": data}
+    return {"metric": metric, "days": data}
 
 
 @app.get("/api/day/{day}")
@@ -472,6 +500,65 @@ def reindex():
 
 
 # @F1-api
+
+def session_usage(con, session_id):
+    """這個 session 燒掉多少 token。api_call 已依 request_id 去重。"""
+    total = dict(con.execute("""
+        SELECT COUNT(*) AS calls,
+               COALESCE(SUM(input_tokens), 0)        AS input,
+               COALESCE(SUM(cache_create_tokens), 0) AS cache_create,
+               COALESCE(SUM(cache_read_tokens), 0)   AS cache_read,
+               COALESCE(SUM(output_tokens), 0)       AS output,
+               COALESCE(SUM(thinking_tokens), 0)     AS thinking
+        FROM api_call WHERE session_id = ?
+    """, (session_id,)).fetchone())
+    total["models"] = rows(con.execute("""
+        SELECT model, COUNT(*) AS calls,
+               COALESCE(SUM(output_tokens), 0) AS output,
+               COALESCE(SUM(input_tokens + cache_create_tokens), 0) AS input_all
+        FROM api_call WHERE session_id = ?
+        GROUP BY model ORDER BY output DESC
+    """, (session_id,)))
+    return total
+
+
+@app.get("/api/project/{project_id}/tokens")
+def project_tokens(project_id: int):
+    """錢花到哪去了：總量、模型分佈、每日曲線，以及子代理燒掉的部分。"""
+    con = db()
+    if con.execute("SELECT 1 FROM project WHERE id = ?", (project_id,)).fetchone() is None:
+        con.close()
+        raise HTTPException(404, "no such project")
+    total = dict(con.execute("""
+        SELECT COUNT(*) AS calls,
+               COALESCE(SUM(input_tokens), 0)        AS input,
+               COALESCE(SUM(cache_create_tokens), 0) AS cache_create,
+               COALESCE(SUM(cache_read_tokens), 0)   AS cache_read,
+               COALESCE(SUM(output_tokens), 0)       AS output,
+               COALESCE(SUM(thinking_tokens), 0)     AS thinking
+        FROM api_call WHERE project_id = ?
+    """, (project_id,)).fetchone())
+    models = rows(con.execute("""
+        SELECT model, COUNT(*) AS calls,
+               COALESCE(SUM(output_tokens), 0) AS output,
+               COALESCE(SUM(input_tokens + cache_create_tokens), 0) AS input_all
+        FROM api_call WHERE project_id = ?
+        GROUP BY model ORDER BY output + input_all DESC
+    """, (project_id,)))
+    by_day = rows(con.execute("""
+        SELECT substr(ts,1,10) AS day,
+               COALESCE(SUM(output_tokens), 0) AS output,
+               COALESCE(SUM(input_tokens + cache_create_tokens), 0) AS input_all
+        FROM api_call WHERE project_id = ? AND ts IS NOT NULL
+        GROUP BY day ORDER BY day
+    """, (project_id,)))
+    agents = dict(con.execute("""
+        SELECT COALESCE(SUM(output_tokens), 0) AS output,
+               COALESCE(SUM(input_tokens), 0)  AS input
+        FROM subagent WHERE project_id = ?
+    """, (project_id,)).fetchone())
+    con.close()
+    return {"total": total, "models": models, "by_day": by_day, "agents": agents}
 
 
 # @F2-api

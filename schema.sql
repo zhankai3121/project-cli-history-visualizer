@@ -129,6 +129,24 @@ CREATE TABLE IF NOT EXISTS subagent (
 CREATE INDEX IF NOT EXISTS ix_subagent_session ON subagent(session_id);
 CREATE INDEX IF NOT EXISTS ix_subagent_project ON subagent(project_id);
 
+-- 每次 API 呼叫的 token 用量。同一個呼叫會被拆成好幾行 assistant（text 一行、
+-- tool_use 一行）而 usage 完全相同，不靠 request_id 去重會高估 2.4 倍。
+CREATE TABLE IF NOT EXISTS api_call (
+    id                  INTEGER PRIMARY KEY,
+    session_id          TEXT NOT NULL,
+    project_id          INTEGER REFERENCES project(id),
+    ts                  TEXT,
+    request_id          TEXT NOT NULL UNIQUE,
+    model               TEXT,
+    input_tokens        INTEGER,
+    cache_create_tokens INTEGER,
+    cache_read_tokens   INTEGER,
+    output_tokens       INTEGER,
+    thinking_tokens     INTEGER
+);
+CREATE INDEX IF NOT EXISTS ix_call_project ON api_call(project_id, ts);
+CREATE INDEX IF NOT EXISTS ix_call_session ON api_call(session_id);
+
 CREATE TABLE IF NOT EXISTS commit_ref (
     id         INTEGER PRIMARY KEY,
     session_id TEXT NOT NULL,

@@ -259,6 +259,9 @@ kbd{font:.58rem/1 ui-monospace,monospace; border:1px solid var(--line); border-b
 .manualrow input{flex:1; font-size:.72rem; font-family:ui-monospace,monospace}
 
 /* @F1-css */
+.heat h3{display:flex; align-items:center; gap:.6em}
+.heat h3 .chip{font-size:.62rem; letter-spacing:normal; text-transform:none;
+               padding:.15em .5em}
 
 
 /* @F2-css */
@@ -570,7 +573,8 @@ kbd{font:.58rem/1 ui-monospace,monospace; border:1px solid var(--line); border-b
     </div>
     <div class="grid" id="grid"></div>
     <div class="heat">
-      <h3>活動熱度（點一天跳過去）</h3>
+      <h3>活動熱度（點一天跳過去）
+        <button class="chip" id="heatmetric" aria-pressed="false">tokens</button></h3>
       <div class="heatgrid" id="heat"></div>
     </div>
   </section>
@@ -784,6 +788,7 @@ function card(p) {
     p.commits ? `${p.commits} commits` : null,
     p.files ? `改 ${p.files} 檔${p.agent_files ? `（${p.agent_files} 由子代理）` : ""}` : null,
     p.agents ? `${p.agents} 個子代理` : null,
+    p.tokens_out ? `${fmt(p.tokens_out)} tok out` : null,
     tools.length > 1 ? tools.map(t => TOOL_LABEL[t] || t).join(" + ")
                      : (tools[0] === "codex" ? TOOL_LABEL.codex : null),
   ].filter(Boolean).join(" · ");
@@ -815,6 +820,7 @@ async function openProject(id, focusSession) {
         title="${esc(lightTitle(project))}"></i>${esc(project.display_name)}</span>
     </div>
     <p class="note">${esc(project.real_path)}${project.exists_on_disk ? "" : " · 🗑 資料夾已不存在"}</p>
+    <p class="note" id="models" hidden></p>
     <div class="actions">
       <button data-act="code">在 VS Code 開啟</button>
       <button data-act="path">複製路徑</button>
@@ -836,6 +842,7 @@ async function openProject(id, focusSession) {
     if (act === "path") copy(project.real_path, e.target);
   };
   watchScroll($("#detail .list"));
+  loadModels(id);
   if (sessions.length) openSession(focusSession || sessions[0].id);
 }
 
@@ -986,19 +993,25 @@ $("#results").addEventListener("click", e => {
 
 /* ── 熱度圖 ───────────────────────────────────────────────────── */
 async function loadHeat() {
-  const { days: data } = await api("/api/heatmap");
+  const tok = STATE_HEAT.metric === "tokens";
+  const { days: data } = await api("/api/heatmap?metric=" + STATE_HEAT.metric);
   if (!data.length) return;
-  const counts = new Map(data.map(d => [d.day, d.n]));
-  const max = Math.max(...counts.values());
+  const counts = new Map(data.map(d => [d.day, d]));
+  const max = Math.max(...data.map(d => d.n));
   const start = new Date(data[0].day), end = new Date(data.at(-1).day);
   start.setDate(start.getDate() - start.getDay());
   const cells = [];
   for (let t = +start; t <= +end; t += DAY) {
     const day = new Date(t).toISOString().slice(0, 10);
-    const n = counts.get(day) || 0;
-    const level = n === 0 ? 0 : Math.min(4, Math.ceil(n / max * 4));
+    const d = counts.get(day);
+    const n = d ? d.n : 0;
+    const level = n === 0 || max === 0 ? 0 : Math.min(4, Math.ceil(n / max * 4));
+    // cache_read 佔 97%，放進色階會把每天壓成同一色 —— 只寫在 title
+    const title = tok
+      ? `${day}：${fmt(n)} tokens（out ${fmt(d && d.out)} · cache read ${fmt(d && d.cache_read)}）`
+      : `${day}：${n} prompts`;
     cells.push(`<div class="cell" style="background:var(--cell${level})"
-      data-day="${day}" title="${day}：${n} prompts"></div>`);
+      data-day="${day}" title="${title}"></div>`);
   }
   $("#heat").innerHTML = cells.join("");
 }
@@ -1020,6 +1033,35 @@ $("#feed").onclick = async () => {
 };
 
 /* @F1-js */
+/* ── Token / cost ─────────────────────────────────────────────── */
+const STATE_HEAT = { metric: "prompts" };
+
+function fmt(n) {
+  n = n || 0;
+  return n >= 1e6 ? (n / 1e6).toFixed(1) + "M"
+       : n >= 1e3 ? Math.round(n / 1e3) + "k" : String(n);
+}
+
+$("#heatmetric").onclick = () => {
+  STATE_HEAT.metric = STATE_HEAT.metric === "tokens" ? "prompts" : "tokens";
+  $("#heatmetric").setAttribute("aria-pressed", STATE_HEAT.metric === "tokens");
+  loadHeat();
+};
+
+// 專案頁的模型分佈。textContent 不走 HTML，不需要 esc()
+async function loadModels(id) {
+  const el = $("#models");
+  if (!el) return;
+  const { total, models } = await api(`/api/project/${id}/tokens`);
+  const all = total.input + total.cache_create + total.output;
+  if (!total.calls || !all) return;
+  const bits = models.slice(0, 4).map(m =>
+    `${m.model || "?"} ${Math.round((m.input_all + m.output) / all * 100)}%`);
+  bits.push(`${fmt(total.output)} out`, `${fmt(all)} 計費 in+out`,
+            `cache read ${fmt(total.cache_read)}`);
+  el.textContent = bits.join(" · ");
+  el.hidden = false;
+}
 
 
 /* @F2-js */
