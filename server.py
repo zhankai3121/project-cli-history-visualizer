@@ -485,6 +485,21 @@ def reindex():
 
 
 # @F6-api
+import export
+from fastapi import Response
+
+
+@app.get("/api/session/{session_id}/export.md")
+def session_export(session_id: str):
+    """整份 session 的 Markdown，給交接文件用。404 沿用 session_detail。"""
+    md = export.session_markdown(session_detail(session_id))
+    # 檔名只用 id 前 8 碼且濾成 ASCII：Content-Disposition 非 ASCII 會炸
+    stem = "".join(c for c in session_id[:8] if c.isalnum() or c in "-_") or "session"
+    return Response(
+        content=md,
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="session-{stem}.md"'},
+    )
 
 
 # @F7-api
