@@ -228,8 +228,15 @@ Windows 主目錄、巢狀子專案、WSL 的專案各自收成一組，可逐�
 | 熱顯像 | `096-thermal-vision-heatmap` | 掃描線疊層、儀器內描邊、等寬全大寫、色階是真的熱力圖 |
 | 靛藍水面 | `099-water-ripple-reflection` | 水面三段漸層底、銀線玻璃、深投影 |
 
-主題只重新定義 CSS 變數，**不動任何版面規則**，所以換主題不會把排版弄壞。選擇存 localStorage。
-（`tests/test_web.py` 有一條測試會擋下在主題區塊裡寫版面規則的行為。）
+主題主要靠重新定義 CSS 變數。少數幾個主題另外有 descendant 規則做視覺細節
+（報紙的內框、原子時代的硬投影位移、蒸汽波的霓虹光暈），改的是 `padding` /
+`transform` / `text-shadow` / `box-shadow`。
+
+**主題不會碰版面原語** —— `display`、`grid-template-*`、`width`、`overflow`、
+`position` 這類屬性一律禁止，所以換主題不可能把 RWD 弄壞。
+`tests/test_web.py` 會逐條掃描每個主題規則（含 descendant）強制這件事。
+
+選擇存 localStorage。
 
 ### 響應式
 

@@ -112,10 +112,12 @@ main{padding:.7em .85em 1.2em}
 .card.stale{opacity:.6}
 .card.gone{border-style:dashed; color:var(--gone)}
 .card h2{font-size:.95rem; margin:0; display:flex; justify-content:space-between;
-         gap:.4em; align-items:baseline;
+         gap:.4em; align-items:baseline; flex-wrap:wrap;
          text-transform:var(--title-transform); letter-spacing:var(--title-spacing)}
+/* flex 子項預設 min-width:auto，不歸零的話超長標題會撐破卡片而不是換行 */
+.card h2 > span{min-width:0; overflow-wrap:anywhere}
 .card h2 em{font-style:normal; color:var(--dim); font-weight:400; font-size:.62rem;
-            white-space:nowrap}
+            white-space:nowrap; min-width:0}
 .rows{display:grid; grid-template-columns:auto 1fr; gap:.2em .5em; font-size:.8rem}
 .rows b{color:var(--dim); font-weight:500; white-space:nowrap;
         text-transform:var(--label-transform)}
@@ -171,7 +173,7 @@ h3:first-child{margin-top:0}
 .scopebar button[aria-pressed="true"]{background:var(--accent);
   border-color:var(--accent); color:var(--on-accent)}
 mark{background:var(--accent); color:var(--on-accent); border-radius:3px; padding:0 2px}
-.note{color:var(--dim); font-size:.7rem; margin:.45em 0}
+.note{color:var(--dim); font-size:.7rem; margin:.45em 0; overflow-wrap:anywhere}
 .dot{width:.42em; height:.42em; border-radius:50%; display:inline-block; margin-right:.3em;
      vertical-align:middle; flex:none}
 .dot.green{background:var(--ok)} .dot.yellow{background:#dfa01b}
@@ -385,7 +387,9 @@ kbd{font:.58rem/1 ui-monospace,monospace; border:1px solid var(--line); border-b
 }
 
 /* ── RWD ───────────────────────────────────────────────────────────────
-   放在最後：這裡只改版面，主題區塊只改變數，兩邊不會打架。
+   放在最後。主題可以改視覺細節（padding / shadow / transform），但不准碰
+   display / grid-template-* / width / overflow 這些版面原語，所以換主題
+   不會把這裡弄壞 —— tests/test_web.py 逐條強制。
    --fs 是行內樣式時（使用者按過 A+/A-）會蓋過這裡的預設，這是對的 ——
    而且 localStorage 每個瀏覽器各自獨立，手機第一次來還是吃預設值。 */
 
@@ -407,7 +411,9 @@ kbd{font:.58rem/1 ui-monospace,monospace; border:1px solid var(--line); border-b
 @media (max-width: 640px){
   :root{ --fs:18px; }
   header{padding:.5em .6em; gap:.3em}
-  input#q{order:10; flex-basis:100%; min-width:0}   /* 搜尋框獨占一行 */
+  /* 搜尋框獨占一行。刻意不用 order —— 那會讓視覺順序與 Tab 順序不一致
+     （WCAG 2.4.3）。#q 本來就是第二個子元素，撐滿一行自然會換行到第二列。 */
+  input#q{flex-basis:100%; min-width:0}
   h1 small{display:none}
   main{padding:.5em .55em 1.2em}
   .grid{gap:.5em}
@@ -416,18 +422,21 @@ kbd{font:.58rem/1 ui-monospace,monospace; border:1px solid var(--line); border-b
   .manualrow{flex-wrap:wrap}
   .manualrow input{flex-basis:100%}
   .rows{grid-template-columns:1fr; gap:.1em}
-  .rows b{font-size:.8em}
+  .rows b{font-size:.64rem}      /* 全站字級一律 rem，才吃得到 --fs */
 }
 
 @media (max-width: 420px){
   :root{ --fs:17px; }
   .chips{gap:.25em}
-  .chip{padding:.28em .55em}
+  /* 只收橫向 —— 縱向留給下面的觸控區塊，不然兩邊會互相覆蓋 */
+  .chip{padding-left:.5em; padding-right:.5em}
   .turn{padding-left:.4em; margin-left:0}
 }
 
-/* 觸控：點擊區拉大，熱度圖格子也放大到點得到 */
-@media (pointer: coarse){
+/* 觸控：點擊區拉大，熱度圖格子放大到點得到。
+   用 any-pointer 而不是 pointer —— pointer 只看「主要」指標裝置，
+   觸控筆電回報 pointer:fine + any-pointer:coarse，用 pointer 會漏掉。 */
+@media (any-pointer: coarse){
   .chip, .actions button, .scopebar button{padding-top:.45em; padding-bottom:.45em}
   .dirs button{padding-top:.5em; padding-bottom:.5em}
   .cell{width:.8em; height:.8em}
@@ -799,6 +808,11 @@ async function openSession(id) {
     const sid = e.target.dataset.resume;
     if (sid) copy(`claude --resume ${sid}`, e.target);
   };
+
+  // 窄螢幕上左右欄是堆疊的，不捲過去的話點了 session 只會看到原本的列表
+  if (window.matchMedia("(max-width: 900px)").matches) {
+    $("#sesspane").scrollIntoView({ behavior: "smooth", block: "start" });
+  }
 }
 
 function promptBlock(p, turns, nextPrompt) {
