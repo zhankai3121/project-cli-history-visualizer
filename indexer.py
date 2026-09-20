@@ -28,6 +28,7 @@ import time
 from pathlib import Path
 
 import codex
+import gemini
 import parser as P
 
 CLAUDE_DIR = Path.home() / ".claude"
@@ -722,6 +723,136 @@ def index_codex(con, resolver):
     return prompts, turns, len(files)
 
 
+# ── 管線 H：Gemini CLI ────────────────────────────────────────────────────
+#
+# 與另外兩條的差別（實測依據見 docs/gemini-schema.md）：
+#   - 檔案雖然是 append-only，但 `$set.messages` 會整批重設訊息表、`$rewindTo`
+#     會砍掉尾巴。游標只能拿來判斷「有沒有變」，一變就整檔從頭重播，並先刪掉
+#     這個 session 已經寫進去的列再重插（比照 index_subagent 的做法）。
+#   - 真人 prompt 要擋掉 CLI 注入的 <session_context>（判別式在 gemini.py）。
+#   - 專案路徑不在 session 檔裡，而在同一個 tmp/<slug>/ 底下的 .project_root，
+#     而且內容**全小寫** —— 直接拿去建 project 會多出一張大小寫不同的重複卡。
+
+
+def gemini_project(con, resolver, root_text):
+    """`.project_root`（全小寫）-> project_id，不製造大小寫重複的卡片。
+
+    1. 資料夾還在 -> `os.path.realpath()` 取回磁碟上的真實大小寫。
+    2. 不在了 -> 用 `COLLATE NOCASE` 對既有的 project 列。
+    3. 都沒有 -> 只好照原樣建一列。
+    """
+    if not root_text:
+        return None
+    key = str(root_text).rstrip("\\/")
+    if os.path.exists(key):
+        return resolver.project(os.path.realpath(key))
+    row = con.execute("SELECT id FROM project WHERE real_path = ? COLLATE NOCASE",
+                      (key,)).fetchone()
+    return row["id"] if row else resolver.project(key)
+
+
+def _record_gemini_tool(con, session_id, project_id, ts, ev):
+    name, args = ev["name"], ev["args"]
+    if gemini.is_file_tool(name):
+        target = gemini.file_target(args)
+        if target:
+            con.execute(
+                "INSERT INTO file_touch(session_id, project_id, ts, path, verb) "
+                "VALUES (?,?,?,?,?)",
+                (session_id, project_id, ts, target, gemini.file_verb(name)))
+    elif gemini.is_shell_tool(name):
+        command = gemini.shell_command(args)
+        if command:
+            con.execute(
+                "INSERT INTO command_run(session_id, project_id, ts, command, kind) "
+                "VALUES (?,?,?,?,?)",
+                (session_id, project_id, ts, command[:2000],
+                 P.classify_command(command)))
+            for message in P.extract_commit_messages(command):
+                con.execute(
+                    "INSERT INTO commit_ref(session_id, project_id, ts, message) "
+                    "VALUES (?,?,?,?)", (session_id, project_id, ts, message[:500]))
+
+
+def index_gemini_session(con, resolver, path):
+    """一個 chats/*.jsonl -> (新增的 prompt 數, turn 數)。檔案沒變就整份跳過。"""
+    if scan_cursor(con, path) is None:
+        return 0, 0
+
+    offset, records = 0, []
+    for new_offset, rec in P.iter_jsonl(path, 0):     # 永遠從頭讀，理由見上面
+        records.append(rec)
+        offset = new_offset
+
+    meta, messages = gemini.replay(records)
+    if not gemini.worth_indexing(messages):
+        save_cursor(con, path, offset)                # 孤兒檔，記下來別再重讀
+        return 0, 0
+
+    session_id = gemini.session_id_of(path, meta.get("sessionId"))
+    project_id = gemini_project(con, resolver, gemini.project_root_of(path))
+    resolver.ensure_session(session_id, project_id, tool="gemini",
+                            transcript_state="live", transcript_path=str(path))
+
+    # 重播是「整份重來」，舊的列一定要先清掉，否則每次檔案變動都多一份
+    for table in ("prompt", "turn", "file_touch", "command_run", "commit_ref"):
+        con.execute(f"DELETE FROM {table} WHERE session_id = ?", (session_id,))
+
+    prompts = turns = seq = 0
+    pending_error = False
+    last_ts = meta.get("startTime")
+
+    for msg in messages:
+        found = gemini.events(msg)
+        names = [e["name"] for e in found if e["kind"] == "tool" and e["name"]]
+        summary = ""
+        turn_ts = msg.get("timestamp") or last_ts
+
+        for ev in found:
+            ts = ev.get("ts") or last_ts
+            last_ts = ts or last_ts
+            if ev["kind"] == "user":
+                seq += 1
+                cur = con.execute(
+                    "INSERT OR IGNORE INTO prompt"
+                    "(session_id, project_id, ts, seq, text, is_slash, source, tool) "
+                    "VALUES (?,?,?,?,?,?, 'transcript', 'gemini')",
+                    (session_id, project_id, ts, seq, ev["text"],
+                     1 if ev["text"].lstrip().startswith("/") else 0))
+                prompts += cur.rowcount
+            elif ev["kind"] == "tool":
+                _record_gemini_tool(con, session_id, project_id, ts, ev)
+            elif ev["kind"] == "tool_output":
+                pending_error = pending_error or bool(ev.get("has_error"))
+            elif ev["kind"] == "assistant":
+                summary = ev["text"]
+
+        if summary or names:
+            con.execute(
+                "INSERT INTO turn(session_id, project_id, ts, assistant_summary, "
+                "tools_json, has_error) VALUES (?,?,?,?,?,?)",
+                (session_id, project_id, turn_ts, summary[:4000] or None,
+                 json.dumps(names, ensure_ascii=False), int(pending_error)))
+            turns += 1
+            pending_error = False
+
+    save_cursor(con, path, offset)
+    return prompts, turns
+
+
+def index_gemini(con, resolver):
+    """回傳 (prompt 數, turn 數, session 檔數)。沒裝 Gemini CLI 就整段跳過。"""
+    if not gemini.available():
+        return 0, 0, 0
+    files = gemini.session_files()
+    prompts = turns = 0
+    for path in files:
+        added, made = index_gemini_session(con, resolver, path)
+        prompts += added
+        turns += made
+    return prompts, turns, len(files)
+
+
 # ── 管線 D：磁碟狀態對帳（資料夾刪掉就從網頁消失）────────────────────────
 #
 # 專案來源仍然是「跑過 CLI 的」（history.jsonl + transcript 的 cwd）。
@@ -1075,6 +1206,10 @@ def run(full=False, force_git=False):
     con.commit()
 
     con.execute("BEGIN IMMEDIATE")
+    gm_prompts, gm_turns, gm_files = index_gemini(con, resolver)
+    con.commit()
+
+    con.execute("BEGIN IMMEDIATE")
     memories = index_memory_files(con, resolver)
     scanned, orphans = scan_project_dirs(con, resolver)
     appeared, vanished = sync_disk_projects(con)
@@ -1091,12 +1226,14 @@ def run(full=False, force_git=False):
 
     codex_note = (f", Codex +{cx_prompts} prompts / +{cx_turns} turns / "
                   f"{cx_files} rollout") if cx_files or cx_prompts else ""
+    gemini_note = (f", Gemini +{gm_prompts} prompts / +{gm_turns} turns / "
+                   f"{gm_files} session") if gm_files or gm_prompts else ""
     print(f"索引完成 {time.time() - started:.2f}s  "
           f"(+{prompts} prompts, +{turns} turns, +{memories} memory 檔, "
           f"專案 +{appeared} / -{vanished}, 掃描 +{scanned} / 清孤兒 {orphans}, "
           f"git repo {repos}{f'（{cached} 個用快取）' if cached else ''}"
           f"{f', 子代理 {agents} / 其改檔 {agent_edits}' if agents else ''}"
-          f"{codex_note})")
+          f"{codex_note}{gemini_note})")
     print("  " + " · ".join(f"{k} {v}" for k, v in stats.items()))
     return stats
 
