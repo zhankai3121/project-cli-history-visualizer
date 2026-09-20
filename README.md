@@ -422,15 +422,19 @@ Windows 主目錄、巢狀子專案、WSL 的專案各自收成一組，可逐�
 
 ```
 server.py            FastAPI，port 8787
-indexer.py           掃 ~/.claude -> SQLite（增量，靠 mtime/size/offset）
+cli.py               終端機查詢（search / projects / session / recent），不啟 server
+export.py            session -> Markdown 交接文件（純函式，server 與 cli 共用）
+indexer.py           掃 ~/.claude -> SQLite（增量，靠 mtime/size/offset；--watch 常駐）
 parser.py            Claude Code 的 JSONL / Markdown 判別式（規格見 docs/jsonl-schema.md）
 codex.py             OpenAI Codex 的 rollout / history 解析
 gemini.py            Gemini CLI 的 chats 解析（規格見 docs/gemini-schema.md）
 schema.sql           資料表與 FTS5 定義
 web/index.html       單檔前端，無 build step，零外部依賴
-tests/               pytest（86 個）—— 用合成資料，不碰真實的 ~/.claude
+tests/               pytest（288 個）—— 用合成資料，不碰真實的 ~/.claude
 docs/jsonl-schema.md 實測的 transcript schema —— 改 parser 前先讀這份
 docs/plan.md         當初的設計計畫與取捨紀錄
+docs/plan-v2.md      第二批功能（token 統計、檔案檢視、時間軸、--watch、匯出、標籤、
+                     搜尋強化、每週回顧、cli、Gemini）的規格與取捨
 index.db             索引產物（.gitignore），隨時可由 ~/.claude 重建
 backup/              每次索引順手備份 history.jsonl（.gitignore，含真實 prompt）
 ```

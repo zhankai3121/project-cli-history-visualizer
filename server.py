@@ -30,7 +30,16 @@ KIND_RANK = {"away_summary": 3, "compact_summary": 2, "memory_file": 1}
 app = FastAPI(title="CLI History Visualizer")
 
 
+_SCHEMA_READY_FOR = None
+
+
 def db():
+    # 換了新程式碼但還沒跑過索引就開 server / cli：查詢會 JOIN 到還不存在的表
+    # （project_meta、api_call…）而 500。每個 process 對每個 DB 路徑做一次建表 + migrate。
+    global _SCHEMA_READY_FOR
+    if _SCHEMA_READY_FOR != indexer.DB_PATH:
+        indexer.connect().close()
+        _SCHEMA_READY_FOR = indexer.DB_PATH
     con = sqlite3.connect(indexer.DB_PATH)
     con.row_factory = sqlite3.Row
     # 背景 watcher 可能正在寫：等最多 5 秒，別直接丟 "database is locked"

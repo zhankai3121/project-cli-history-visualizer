@@ -427,6 +427,30 @@ def test_mismatch_手寫落後實作(client):
     assert flag["files"] == [], "整份過期時沒有特定檔案可指"
 
 
+def test_舊_DB_沒有新表時_server_自己建(fake_home):
+    """換了新程式碼但還沒跑索引就開 server：不能因為缺 project_meta / api_call 而 500。"""
+    import sqlite3
+
+    from fastapi.testclient import TestClient
+
+    import indexer
+    import server
+
+    con = sqlite3.connect(indexer.DB_PATH)
+    con.executescript("""
+        CREATE TABLE project(id INTEGER PRIMARY KEY, real_path TEXT UNIQUE,
+                             display_name TEXT, first_seen TEXT, last_seen TEXT,
+                             session_count INTEGER, prompt_count INTEGER);
+        INSERT INTO project(real_path, display_name) VALUES ('C:\\old\\proj', 'proj');
+    """)
+    con.commit()
+    con.close()
+    server._SCHEMA_READY_FOR = None
+    r = TestClient(server.app).get("/api/overview?include_containers=true")
+    assert r.status_code == 200, r.text[:200]
+    assert TestClient(server.app).get("/api/tags").status_code == 200
+
+
 def test_memory_比所有改檔都新_不算不符(client):
     """剛寫好的 brain.md 提到很久沒動的檔 —— 那是計畫，不是「寫了沒做」。"""
     import sqlite3
