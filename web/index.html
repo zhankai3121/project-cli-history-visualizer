@@ -292,6 +292,12 @@ kbd{font:.58rem/1 ui-monospace,monospace; border:1px solid var(--line); border-b
 
 
 /* @F7-css */
+/* 卡片上的標籤不在 .tags flex 容器裡，行內元素的上下 padding 會蓋到隔壁行 */
+.meta .tag{display:inline-block}
+#tagfilter{max-width:9rem}
+#metamodal label{display:flex; gap:.4em; align-items:center; font-size:.8rem}
+#metatags{font-size:.8rem}
+#metanote{font:inherit; font-size:.8rem; resize:vertical}
 
 
 /* @F8-css */
@@ -586,6 +592,7 @@ kbd{font:.58rem/1 ui-monospace,monospace; border:1px solid var(--line); border-b
       <button class="chip" data-f="container" aria-pressed="false">顯示非專案路徑</button>
       <button class="chip" data-f="onlyhist" aria-pressed="false">只看有 CLI 紀錄</button>
       <button class="chip" data-f="mismatch" aria-pressed="false">手寫與實作不符</button>
+      <select id="tagfilter" title="標籤"><option value="">全部標籤</option></select>
       <button class="chip" id="feed">最近動態 →</button>
     </div>
     <div class="grid" id="grid"></div>
@@ -628,6 +635,20 @@ kbd{font:.58rem/1 ui-monospace,monospace; border:1px solid var(--line); border-b
   </div>
 </div>
 <!-- @F7-html -->
+<div class="modal" id="metamodal" hidden>
+  <div class="sheet">
+    <h2>專案標記</h2>
+    <label for="metapin"><input type="checkbox" id="metapin"> 釘選（排在總覽最前面）</label>
+    <input id="metatags" placeholder="標籤，逗號分隔（最多 20 個，每個 30 字）"
+           spellcheck="false" autocomplete="off">
+    <textarea id="metanote" rows="6" placeholder="筆記（第一行會顯示在卡片上）"></textarea>
+    <footer>
+      <button id="metasave">儲存</button>
+      <span class="grow"></span>
+      <button id="metaclose">關閉</button>
+    </footer>
+  </div>
+</div>
 
 <script>
 const $ = s => document.querySelector(s);
@@ -726,6 +747,7 @@ function passes(p) {
   if (f.has("flags") && !p.hotspots.length) return false;
   if (f.has("evap") && p.live_sessions > 0) return false;
   if (f.has("mismatch") && !p.mismatch) return false;
+  if (TAG && !p.tags.includes(TAG)) return false;
   return true;
 }
 
@@ -737,7 +759,9 @@ function renderGrid() {
                       (b.last_seen || "").localeCompare(a.last_seen || ""),
     volume: (a, b) => b.prompt_count - a.prompt_count,
   };
-  const list = STATE.projects.filter(passes).sort(sorters[STATE.sort]);
+  const ranked = STATE.projects.filter(passes).sort(sorters[STATE.sort]);
+  // 釘選的一律排最前面，組內維持上面排好的順序（filter 是穩定的）
+  const list = [...ranked.filter(p => p.pinned), ...ranked.filter(p => !p.pinned)];
   const grid = $("#grid");
 
   if (!list.length) {
@@ -814,7 +838,7 @@ function card(p) {
   ].filter(Boolean).join(" · ");
 
   return `<article class="${cls.join(" ")}" data-id="${p.id}">
-    <h2><span><i class="dot ${p.light || "none"}" title="${esc(lightTitle(p))}"></i>${esc(p.display_name)}</span>
+    <h2><span><i class="dot ${p.light || "none"}" title="${esc(lightTitle(p))}"></i>${p.pinned ? "📌 " : ""}${esc(p.display_name)}</span>
         <em>${p.is_system ? "⚙ 系統目錄 · " : p.is_container ? "📁 容器 · " : ""}${p.has_history ? "" : "📂 無 CLI 紀錄 · "}${p.exists_on_disk ? "" : "🗑 已刪除 · "}${ago(p.last_seen)}</em></h2>
     ${body ? `<div class="rows">${body}</div>`
            : `<p class="empty">尚無可抽取的進度訊號</p>`}
@@ -825,6 +849,8 @@ function card(p) {
       ${p.hotspots.map(h => `<br><span class="flag">🚩 ${esc(h.path.split(/[\\/]/).pop())} 被改 ${h.n} 次</span>`).join("")}
       ${p.mismatch ? `<br><span class="flag">⚠ ${esc(p.mismatch.detail)}</span>` : ""}
       ${p.last_prompt ? `<br>最後「${esc(p.last_prompt.text.slice(0, 46))}」${date(p.last_prompt.ts)}` : ""}
+      ${p.tags.length ? `<br>${p.tags.map(t => `<span class="tag">${esc(t)}</span>`).join(" ")}` : ""}
+      ${p.note ? `<br><span class="src">📝 ${esc(p.note.split("\n")[0].slice(0, 60))}</span>` : ""}
       ${p.sources.length ? `<br><span class="src">來源 ${p.sources.map(esc).join(" · ")}</span>` : ""}
     </div>
   </article>`;
@@ -845,6 +871,7 @@ async function openProject(id, focusSession) {
     <div class="actions">
       <button data-act="code">在 VS Code 開啟</button>
       <button data-act="path">複製路徑</button>
+      <button data-act="meta">📌 / 🏷 / 📝</button>
       ${project.is_git ? `<button data-act="branch">⎇ ${esc(project.git_branch || "?")}
         · ${project.git_dirty ? project.git_dirty + " 個未提交" : "工作區乾淨"}</button>` : ""}
     </div>
@@ -870,6 +897,7 @@ async function openProject(id, focusSession) {
     const act = e.target.dataset.act;
     if (act === "code") location.href = "vscode://file/" + project.real_path.replace(/\\/g, "/");
     if (act === "path") copy(project.real_path, e.target);
+    if (act === "meta") openMeta(project);
   };
   watchScroll($("#detail .list"));
   loadModels(id);
@@ -1185,6 +1213,60 @@ async function loadTimeline(id) {
 
 
 /* @F7-js */
+/* ── 專案標記：釘選 / 標籤 / 筆記 ──────────────────────────────── */
+/* 標籤篩選獨立於 STATE.filters —— 那是一組布林 chip，這是單選下拉 */
+let TAG = "";
+let META_ID = null;      // 目前在編輯哪個專案
+
+async function fillTagFilter() {
+  const { tags } = await api("/api/tags");
+  // 選著的標籤被改掉／刪光時要放手，否則 grid 會永遠是空的
+  if (TAG && !tags.some(t => t.tag === TAG)) TAG = "";
+  $("#tagfilter").innerHTML = `<option value="">全部標籤</option>` +
+    tags.map(t => `<option value="${esc(t.tag)}">${esc(t.tag)}（${t.n}）</option>`).join("");
+  $("#tagfilter").value = TAG;
+}
+
+async function openMeta(project) {
+  META_ID = project.id;
+  const meta = await api("/api/project/" + project.id + "/meta");
+  $("#metapin").checked = !!meta.pinned;
+  $("#metatags").value = meta.tags.join(", ");
+  $("#metanote").value = meta.note || "";
+  $("#metamodal").hidden = false;
+  $("#metatags").focus();
+}
+
+$("#metasave").onclick = async () => {
+  if (META_ID === null) return;
+  const body = {
+    pinned: $("#metapin").checked,
+    tags: $("#metatags").value.split(",").map(t => t.trim()).filter(Boolean),
+    note: $("#metanote").value,
+  };
+  const res = await fetch("/api/project/" + META_ID + "/meta", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    alert("存不起來：" + (err.detail || res.status));
+    return;
+  }
+  $("#metamodal").hidden = true;
+  await fillTagFilter();      // 先更新選單再重畫，TAG 才不會停在已消失的標籤
+  await loadOverview();
+};
+
+$("#metaclose").onclick = () => { $("#metamodal").hidden = true; };
+$("#metamodal").onclick = e => {
+  if (e.target === $("#metamodal")) $("#metamodal").hidden = true;
+};
+
+$("#tagfilter").onchange = e => { TAG = e.target.value; renderGrid(); };
+
+fillTagFilter();
 
 
 /* @F8-js */
@@ -1492,6 +1574,7 @@ document.addEventListener("keydown", e => {
     $("#q").focus();
     $("#q").select();
   } else if (e.key === "Escape") {
+    if (!$("#metamodal").hidden) { $("#metamodal").hidden = true; return; }
     if (!$("#foldermodal").hidden) { $("#foldermodal").hidden = true; return; }
     $("#q").value = "";
     show("overview");

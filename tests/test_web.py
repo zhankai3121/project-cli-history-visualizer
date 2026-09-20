@@ -463,6 +463,12 @@ def test_大括號配對():
     assert CSS.count("{") == CSS.count("}"), "CSS 大括號不配對（已排除註解）"
 
 
+def test_釘選會排前面():
+    """排序器沒有 pinned 這一維，靠排完之後再切一刀 —— 切不見了就沒人擋。"""
+    body = re.search(r"function renderGrid\(.*?\n\}", RAW_JS, re.S).group(0)
+    assert "p.pinned" in body, "renderGrid 沒有把釘選的專案排到前面"
+
+
 JS_IDS = sorted(set(re.findall(r'\$\("#([\w-]+)"\)', RAW_JS))
                 | set(re.findall(r'getElementById\("([\w-]+)"\)', RAW_JS)))
 
