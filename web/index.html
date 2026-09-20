@@ -151,9 +151,12 @@ main{padding:.7em var(--main-pad) 1.2em}
       font-size:.8rem; border-radius:.3em; cursor:pointer}
 .back:hover{background:var(--bg)}
 /* flex-wrap 讓側欄在放不下時自己換行，不需要斷點。兩邊的 flex-basis 加起來
-   約 42rem，所以大概在 870px 左右自然塌成上下堆疊。 */
+   是 42rem，算出來約 906px 開始並排，跟下面 900px 的高度斷點對得上。
+   要調側欄寬度就改這兩個基準，但**總和要維持 42rem**，否則堆疊點會飄掉。
+   .list 刻意 flex-grow:0 —— 讓它長的話 1920px 上會佔掉三分之一寬度，
+   而 session 列只是標題加一行摘要，用不到那麼寬。多出來的空間全給 .pane。 */
 .split{display:flex; flex-wrap:wrap; gap:.8em; align-items:flex-start}
-.list{flex:1 1 16rem; min-width:0; max-width:100%;
+.list{flex:0 1 14rem; min-width:0; max-width:100%;
       display:flex; flex-direction:column; gap:.35em; max-height:78vh; overflow:auto}
 .sess{
   background:var(--card-bg); border:var(--border-w) solid var(--line);
@@ -163,7 +166,7 @@ main{padding:.7em var(--main-pad) 1.2em}
 .sess:hover,.sess[aria-current="true"]{border-color:var(--accent)}
 .sess .t{font-size:.82rem; font-weight:600}
 .sess .m{font-size:.66rem; color:var(--dim)}
-.pane{flex:3 1 26rem; min-width:0; max-width:100%;
+.pane{flex:1 1 28rem; min-width:0; max-width:100%;
       background:var(--card-bg); border:var(--border-w) solid var(--line);
       border-radius:var(--radius); box-shadow:var(--shadow), var(--card-inset);
       backdrop-filter:var(--blur); padding:.8em; max-height:78vh; overflow:auto}
@@ -433,7 +436,8 @@ kbd{font:.58rem/1 ui-monospace,monospace; border:1px solid var(--line); border-b
    78vh 會變 156vh，這個只能靠斷點。 */
 @media (max-width: 900px){
   :root{ --main-pad:.7em; }
-  .list{max-height:38vh}
+  /* 這裡已經堆疊了，側欄要吃滿整行，不然只有 14rem 寬 */
+  .list{max-height:38vh; flex-basis:100%}
   .pane{max-height:none}
   .card h2 em{white-space:normal}
 }

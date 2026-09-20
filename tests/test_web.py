@@ -194,6 +194,39 @@ def test_split_在窄螢幕會堆疊():
         ".split 既沒用 flex-wrap，也沒有任何斷點改成單欄"
 
 
+def flex_basis_rem(selector):
+    body = re.search(re.escape(selector) + r"\s*\{([^}]*)\}", CSS).group(1)
+    value = dict(decls(body)).get("flex", "")
+    hit = re.search(r"([\d.]+)rem", value)
+    return float(hit.group(1)) if hit else None
+
+
+def test_側欄基準總和要對上堆疊斷點():
+    """.split 靠 flex-wrap 塌陷，塌陷時機由兩個 flex-basis 的總和決定。
+
+    總和 42rem 換算約 906px，剛好對上 900px 的高度斷點。調側欄寬度時
+    只搬比例、不動總和，否則堆疊點會飄離斷點，出現「已經很窄卻還並排」
+    或「明明放得下卻堆疊」的中間地帶。
+    """
+    lst, pane = flex_basis_rem(".list"), flex_basis_rem(".pane")
+    assert lst and pane, "flex-basis 抓不到，寫法可能改了"
+    assert lst + pane == pytest.approx(42, abs=0.5), \
+        f"基準總和 {lst}+{pane}={lst + pane}rem，偏離 42rem 會讓堆疊點離開 900px 斷點"
+
+
+def test_側欄不要跟著變寬():
+    """session 列只有標題加一行摘要，長到 1920px 的三分之一是浪費。"""
+    body = re.search(r"\.list\s*\{([^}]*)\}", CSS).group(1)
+    grow = dict(decls(body)).get("flex", "").split()[0]
+    assert grow == "0", f".list 的 flex-grow 是 {grow}，寬螢幕會長得太寬"
+
+
+def test_堆疊之後側欄要吃滿整行():
+    narrow = media_body(max_w=999)
+    assert re.search(r"\.list\s*\{[^}]*flex-basis:\s*100%", narrow), \
+        "堆疊後 .list 還是 14rem，右邊會空一大塊"
+
+
 def test_堆疊時不會兩個滿版高度相加():
     narrow = media_body(max_w=999)
     assert re.search(r"\.pane\s*\{[^}]*max-height:\s*none", narrow) or \
