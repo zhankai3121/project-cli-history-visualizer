@@ -465,7 +465,8 @@ def day_detail(day: str):
 
 @app.post("/api/reindex")
 def reindex():
-    return indexer.run(full=False)
+    # 使用者按 ↻ 的語意就是「現在給我最新的」，所以 git 狀態不吃快取
+    return indexer.run(full=False, force_git=True)
 
 
 if __name__ == "__main__":

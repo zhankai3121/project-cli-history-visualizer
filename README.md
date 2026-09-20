@@ -61,9 +61,22 @@ python -c "import sqlite3; c=sqlite3.connect(':memory:'); c.execute(\"create vir
 索引指令：
 
 ```bash
-python indexer.py          # 增量（只讀 jsonl 新增的部分）
-python indexer.py --full   # 砍掉重建（專案根目錄設定會保留）
+python indexer.py              # 增量（只讀 jsonl 新增的部分，git 狀態吃快取）
+python indexer.py --force-git  # 增量，但重讀所有 repo 的 git 狀態
+python indexer.py --full       # 砍掉重建（專案根目錄設定會保留）
 ```
+
+**git 狀態是有快取的。** 每個 repo 要跑三次 git 指令，在 WSL 的 UNC 路徑上單一 repo
+就要 0.5–0.9 秒（本機實測 16 個 repo 共 3.8 秒）。所以用 `.git/{HEAD,index,packed-refs,refs}`
+的 mtime 當指紋，沒變就跳過 —— 實測 3.86s → 0.27s。
+
+取捨要講清楚：**純粹改工作區的檔案不會動到 `.git`**，所以「未提交檔案數」最多可能
+落後 `GIT_TTL_SECONDS`（預設 600 秒）。按網頁上的 `↻`、跑 `--force-git` 或 `--full`
+都會強制重讀。
+
+實作上有個關鍵細節：指紋必須在**跑完 git 之後**才取 —— `git status` 自己會重寫
+`.git/index`，先取的話下次比對必定不同，快取等於沒做。`tests/test_git_cache.py`
+有一條專門守這件事。
 
 跑測試：
 

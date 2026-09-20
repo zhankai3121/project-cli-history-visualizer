@@ -99,6 +99,7 @@ def migrate(con):
             ("git_branch", "TEXT"), ("git_last_ts", "TEXT"),
             ("git_last_msg", "TEXT"), ("git_dirty", "INTEGER"),
             ("git_commits", "INTEGER"),
+            ("git_signature", "TEXT"), ("git_checked_at", "TEXT"),
             ("is_container", "INTEGER NOT NULL DEFAULT 0"),
             ("is_scanned", "INTEGER NOT NULL DEFAULT 0"),
             ("is_system", "INTEGER NOT NULL DEFAULT 0"),
@@ -844,28 +845,89 @@ def _git(path, *args, timeout=25):
     return done.stdout.strip() if done.returncode == 0 else None
 
 
-def collect_git(con):
+GIT_TTL_SECONDS = 600
+
+
+def git_signature(real_path):
+    """.git 底下幾個檔案的 mtime 合起來當指紋。
+
+    commit / checkout / add 都會動到其中之一。純粹改工作區的檔案不會，
+    所以還要搭配 TTL —— 這是刻意的取捨：每次都跑 `git status` 太慢
+    （WSL 上單一 repo 就要 0.5–0.9 秒）。按 ↻ 或 --full 會強制重讀。
+    """
+    dot = Path(real_path) / ".git"
+    try:
+        if dot.is_file():                 # worktree / submodule 的 .git 是檔案
+            return str(dot.stat().st_mtime_ns)
+    except OSError:
+        return None
+    parts = []
+    for name in ("HEAD", "index", "packed-refs", "refs"):
+        try:
+            parts.append(str((dot / name).stat().st_mtime_ns))
+        except OSError:
+            parts.append("-")
+    return "|".join(parts) if any(p != "-" for p in parts) else None
+
+
+def _status_v2(path):
+    """一次呼叫同時拿到分支與未提交檔案數（比分開跑省一次 git）。"""
+    out = _git(path, "status", "--porcelain=v2", "--branch")
+    if out is None:
+        return None, None
+    branch, dirty = None, 0
+    for line in out.splitlines():
+        if line.startswith("# branch.head "):
+            branch = line[len("# branch.head "):].strip()
+        elif line and not line.startswith("#"):
+            dirty += 1
+    return branch, dirty
+
+
+def collect_git(con, force=False):
+    """回傳 (實際重讀的 repo 數, 靠快取跳過的數量)。"""
     targets = con.execute(
-        "SELECT id, real_path FROM project WHERE exists_on_disk = 1 AND is_git = 1"
-    ).fetchall()
-    updated = 0
+        "SELECT id, real_path, git_signature, git_checked_at "
+        "FROM project WHERE exists_on_disk = 1 AND is_git = 1").fetchall()
+    now = dt.datetime.now(dt.timezone.utc)
+    updated = skipped = 0
+
     for row in targets:
         path = row["real_path"]
+        signature = git_signature(path)
+
+        if not force and signature and signature == row["git_signature"]:
+            fresh = False
+            if row["git_checked_at"]:
+                try:
+                    age = (now - dt.datetime.fromisoformat(
+                        row["git_checked_at"])).total_seconds()
+                    fresh = age < GIT_TTL_SECONDS
+                except ValueError:
+                    pass
+            if fresh:
+                skipped += 1
+                continue
+
         head = _git(path, "log", "-1", "--format=%ct%x1f%s")
         if head is None:
             continue
         epoch, _, message = head.partition("\x1f")
         last_ts = iso_utc(int(epoch) * 1000) if epoch.isdigit() else None
-        porcelain = _git(path, "status", "--porcelain") or ""
+        branch, dirty = _status_v2(path)
         total = _git(path, "rev-list", "--count", "HEAD")
+
+        # 指紋要在跑完 git 之後才取 —— `git status` 自己可能重寫 .git/index，
+        # 先取的話下次比對必定不同，快取等於失效
         con.execute(
             "UPDATE project SET git_branch = ?, git_last_ts = ?, git_last_msg = ?, "
-            "git_dirty = ?, git_commits = ? WHERE id = ?",
-            (_git(path, "rev-parse", "--abbrev-ref", "HEAD"), last_ts, message[:200],
-             len([ln for ln in porcelain.splitlines() if ln.strip()]),
-             int(total) if total and total.isdigit() else None, row["id"]))
+            "git_dirty = ?, git_commits = ?, git_signature = ?, git_checked_at = ? "
+            "WHERE id = ?",
+            (branch, last_ts, message[:200], dirty,
+             int(total) if total and total.isdigit() else None,
+             git_signature(path), now.isoformat(timespec="seconds"), row["id"]))
         updated += 1
-    return updated
+    return updated, skipped
 
 
 # ── 匯總 ──────────────────────────────────────────────────────────────────
@@ -887,7 +949,7 @@ def rollup(con):
     """)
 
 
-def run(full=False):
+def run(full=False, force_git=False):
     # --full 砍掉整個 DB 重建，但使用者設定（專案根目錄）不該跟著陪葬。
     # 先抄出來，建好新 DB 再寫回去。
     saved_config = {}
@@ -928,7 +990,7 @@ def run(full=False):
     memories = index_memory_files(con, resolver)
     scanned, orphans = scan_project_dirs(con, resolver)
     appeared, vanished = sync_disk_projects(con)
-    repos = collect_git(con)
+    repos, cached = collect_git(con, force=full or force_git)
     rollup(con)
     con.commit()
 
@@ -944,7 +1006,7 @@ def run(full=False):
     print(f"索引完成 {time.time() - started:.2f}s  "
           f"(+{prompts} prompts, +{turns} turns, +{memories} memory 檔, "
           f"專案 +{appeared} / -{vanished}, 掃描 +{scanned} / 清孤兒 {orphans}, "
-          f"git repo {repos}"
+          f"git repo {repos}{f'（{cached} 個用快取）' if cached else ''}"
           f"{f', 子代理 {agents} / 其改檔 {agent_edits}' if agents else ''}"
           f"{codex_note})")
     print("  " + " · ".join(f"{k} {v}" for k, v in stats.items()))
@@ -964,4 +1026,7 @@ def sync_only(con):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--full", action="store_true", help="砍掉重建")
-    run(full=ap.parse_args().full)
+    ap.add_argument("--force-git", action="store_true",
+                    help="忽略快取，重讀所有 repo 的 git 狀態")
+    args = ap.parse_args()
+    run(full=args.full, force_git=args.force_git)
