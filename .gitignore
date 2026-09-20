@@ -10,3 +10,6 @@ index.db-shm
 # history.jsonl 備份含真實 prompt 內容，不進版控
 backup/
 docs/plan.md
+
+# Claude Code 子代理的 worktree
+.claude/worktrees/
