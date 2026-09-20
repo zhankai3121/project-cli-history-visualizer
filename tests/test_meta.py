@@ -59,6 +59,24 @@ def test_full_重建保留_meta(client):
     assert client.get(f"/api/project/{alpha_id(client)}/meta").json() == before
 
 
+def test_tags_欄位壞掉不會讓總覽_500(client):
+    """手動改壞 DB 的 tags JSON：overview / meta / tags 都要照常回，當成沒標籤。"""
+    import sqlite3
+
+    import indexer
+
+    pid = alpha_id(client)
+    real_path = client.get(f"/api/project/{pid}").json()["project"]["real_path"]
+    con = sqlite3.connect(indexer.DB_PATH)
+    con.execute("INSERT OR REPLACE INTO project_meta(real_path, pinned, tags) VALUES (?, 1, ?)",
+                (real_path, "{not json"))
+    con.commit()
+    con.close()
+    assert client.get("/api/overview").status_code == 200
+    assert client.get(f"/api/project/{pid}/meta").json()["tags"] == []
+    assert client.get("/api/tags").json()["tags"] == []
+
+
 def test_型別錯回_400(client):
     pid = alpha_id(client)
     for bad in ({"pinned": "yes"}, {"tags": "後端,前端"}, {"tags": [1]},

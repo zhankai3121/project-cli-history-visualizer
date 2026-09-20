@@ -1222,9 +1222,11 @@ async function fillTagFilter() {
   const { tags } = await api("/api/tags");
   // 選著的標籤被改掉／刪光時要放手，否則 grid 會永遠是空的
   if (TAG && !tags.some(t => t.tag === TAG)) TAG = "";
-  $("#tagfilter").innerHTML = `<option value="">全部標籤</option>` +
-    tags.map(t => `<option value="${esc(t.tag)}">${esc(t.tag)}（${t.n}）</option>`).join("");
-  $("#tagfilter").value = TAG;
+  // 用 Option 物件，不拼字串：esc() 不跳脫雙引號，標籤含 " 會把 value 截斷
+  const sel = $("#tagfilter");
+  sel.replaceChildren(new Option("全部標籤", ""),
+    ...tags.map(t => new Option(`${t.tag}（${t.n}）`, t.tag)));
+  sel.value = TAG;
 }
 
 async function openMeta(project) {

@@ -126,7 +126,7 @@ def overview(include_gone: bool = False, include_containers: bool = False,
 
     for proj in projects:
         pid = proj["id"]
-        proj["tags"] = json.loads(proj["tags"])
+        proj["tags"] = parse_tags(proj["tags"])
 
         signal = con.execute("""
             SELECT kind, goal, state, next_step, origin, ts FROM progress_signal
@@ -836,12 +836,21 @@ META_DEFAULT = {"pinned": 0, "tags": [], "note": None, "updated_at": None}
 MAX_TAGS, MAX_TAG_LEN, MAX_NOTE = 20, 30, 4000
 
 
+def parse_tags(text):
+    """DB 裡的 tags 欄位 -> list。手動改壞 DB 不該讓整個總覽 500。"""
+    try:
+        got = json.loads(text or "[]")
+    except (TypeError, ValueError):
+        return []
+    return [t for t in got if isinstance(t, str)] if isinstance(got, list) else []
+
+
 def read_meta(con, real_path):
     row = con.execute("SELECT pinned, tags, note, updated_at FROM project_meta "
                       "WHERE real_path = ?", (real_path,)).fetchone()
     if row is None:
         return dict(META_DEFAULT)
-    return {"pinned": row["pinned"], "tags": json.loads(row["tags"]),
+    return {"pinned": row["pinned"], "tags": parse_tags(row["tags"]),
             "note": row["note"], "updated_at": row["updated_at"]}
 
 
@@ -931,7 +940,7 @@ def all_tags():
     con = db()
     counts = {}
     for row in con.execute("SELECT tags FROM project_meta"):
-        for tag in json.loads(row["tags"]):
+        for tag in parse_tags(row["tags"]):
             counts[tag] = counts.get(tag, 0) + 1
     con.close()
     ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
