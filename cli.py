@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import inspect
 import json
+import os
 import sys
 
 import indexer
@@ -64,7 +65,10 @@ def show_hits(hits):
 
 
 def cmd_search(args):
-    kwargs = {"q": " ".join(args.q), "limit": args.limit, "scope": args.scope}
+    kwargs = {"q": " ".join(args.q).strip(), "limit": args.limit, "scope": args.scope}
+    if not kwargs["q"]:
+        warn("關鍵字不可為空")
+        return 2
     if args.since or args.until:
         # F8 之前 search() 沒有這兩個參數，硬傳會 TypeError
         params = inspect.signature(server.search).parameters
@@ -167,4 +171,10 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        code = main()
+        sys.stdout.flush()
+    except (BrokenPipeError, OSError):
+        # 接 head / findstr 之類提早關管線：Windows 沒有 SIGPIPE，直接靜默結束
+        os._exit(0)
+    sys.exit(code)

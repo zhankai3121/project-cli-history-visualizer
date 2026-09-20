@@ -210,7 +210,8 @@ python cli.py session <session-id> [--json]
 python cli.py recent [--limit 30]
 ```
 
-每筆一行 `日期  專案 › session 標題  內文`；`--json` 印的是 API 原樣的結構，
+每筆一行 `日期  專案 › session 標題  內文`；`--limit` 是每一類（prompt / 回覆 /
+子代理）各取 N 筆，`--scope all` 最多印 3N 行。`--json` 印的是 API 原樣的結構，
 可以接 `jq`。exit code：有結果 `0`、查無結果 `1`、還沒建索引 `2`（會提示先跑
 `python indexer.py`）—— 所以能直接寫進 shell 腳本。
 
