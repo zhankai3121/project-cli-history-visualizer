@@ -761,7 +761,6 @@ def mark_like(text, term, window=60):
 
 
 # @F9-api
-import datetime as dt
 
 ZERO_TOKENS = {"calls": 0, "output": 0, "input_all": 0, "cache_read": 0}
 
@@ -791,7 +790,10 @@ def week_tokens(con, start, end, per_project=False):
     """
     try:
         got = rows(con.execute(sql, (start, end)))
-    except sqlite3.OperationalError:
+    except sqlite3.OperationalError as exc:
+        # 只吞「表還沒建」（換了新程式碼但還沒跑過索引）；其他 SQL 錯誤照常炸出來
+        if "no such table" not in str(exc):
+            raise
         return [] if per_project else dict(ZERO_TOKENS)
     return got if per_project else (got[0] if got else dict(ZERO_TOKENS))
 
@@ -864,14 +866,18 @@ def week(start: str = ""):
         b["tokens_out"] = r["output"]
         b["tokens_all"] = r["input_all"] + r["output"]
 
-    # 這週最新的進度訊號（ts 由舊到新，後面的直接覆蓋前面的）
+    # 這週最新的進度訊號（ts 由舊到新，後面的覆蓋前面的 —— 但逐欄覆蓋，
+    # 只有 goal 的新訊號不該把前一筆的 next_step 洗成 null）
     for r in rows(con.execute("""
         SELECT project_id, goal, next_step FROM progress_signal
         WHERE ts >= ? AND ts < ? AND project_id IS NOT NULL
           AND (goal IS NOT NULL OR next_step IS NOT NULL)
         ORDER BY ts""", args)):
         b = bucket(r["project_id"])
-        b["goal"], b["next_step"] = r["goal"], r["next_step"]
+        if r["goal"]:
+            b["goal"] = r["goal"]
+        if r["next_step"]:
+            b["next_step"] = r["next_step"]
 
     for r in con.execute("SELECT id, display_name FROM project"):
         if r["id"] in agg:
